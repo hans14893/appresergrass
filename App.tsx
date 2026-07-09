@@ -483,6 +483,8 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
   const [selected, setSelected] = useState<Court | null>(null);
   const [stats, setStats] = useState<CourtStats | null>(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<'list' | 'form' | 'prices' | 'schedule' | 'detail' | 'calendar' | 'blocks' | 'blockForm'>('list');
+  const [query, setQuery] = useState('');
   const [form, setForm] = useState({
     name: '',
     code: '',
@@ -506,6 +508,10 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
   useEffect(() => {
     loadAdminCourts();
   }, []);
+
+  const filteredCourts = adminCourts.filter((court) =>
+    `${court.name} ${court.code ?? ''} ${court.type ?? ''}`.toLowerCase().includes(query.toLowerCase())
+  );
 
   const loadAdminCourts = async () => {
     try {
@@ -619,6 +625,7 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       await loadAdminCourts();
       await refresh();
       resetForm();
+      setView('list');
       Alert.alert('Cancha', 'Cambios guardados correctamente.');
     } catch (error) {
       Alert.alert('Cancha', error instanceof Error ? error.message : 'No se pudo guardar');
@@ -647,95 +654,156 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
     }
   };
 
+  if (view === 'form') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title={selected ? 'Editar cancha' : 'Crear cancha'} onBack={() => setView('list')} />
+        <View style={styles.photoStrip}>
+          <View style={styles.photoPlaceholder}>
+            <Ionicons name="camera-outline" size={24} color="#ffffff" />
+            <Text style={styles.bodyCopy}>Agregar foto</Text>
+          </View>
+          {[0, 1].map((item) => (
+            <Image key={item} source={{ uri: form.mainImageUrl || courtImages[item] }} style={styles.photoPreview} />
+          ))}
+        </View>
+        <View style={styles.adminCard}>
+          <Text style={styles.greenLink}>Informacion basica</Text>
+          <AdminInput label="Nombre de la cancha *" placeholder="Ej: Cancha 1" value={form.name} onChangeText={(value) => setForm({ ...form, name: value })} />
+          <AdminInput label="Codigo" placeholder="Ej: C001" value={form.code} onChangeText={(value) => setForm({ ...form, code: value })} />
+          <SelectLine label="Tipo de cancha *" value={form.type.replace('_', ' ')} onPress={() => setForm({ ...form, type: form.type === 'GRASS_SINTETICO' ? 'FUTBOL_7' : 'GRASS_SINTETICO' })} />
+          <View style={styles.twoCols}>
+            <AdminInput label="Dimensiones" placeholder="Ej: 50m x 30m" value={form.dimensions} onChangeText={(value) => setForm({ ...form, dimensions: value })} />
+            <AdminInput label="Capacidad" placeholder="Ej: 14 jugadores" value={form.maxPlayers} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, maxPlayers: value })} />
+          </View>
+          <AdminInput label="Descripcion" placeholder="Describe tu cancha..." value={form.description} onChangeText={(value) => setForm({ ...form, description: value })} multiline />
+        </View>
+        <View style={styles.adminCard}>
+          <Text style={styles.greenLink}>Precio base</Text>
+          <AdminInput label="Precio por hora *" placeholder="S/ 0.00" value={form.weekdayMorning} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayMorning: value, weekdayNight: value, weekend: value })} />
+        </View>
+        <Button title="Siguiente" onPress={() => setView('prices')} />
+      </ScrollView>
+    );
+  }
+
+  if (view === 'prices') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title="Precios y tarifas" onBack={() => setView('form')} actionIcon="add" onAction={() => undefined} />
+        <SegmentTabs tabs={['Dias de semana', 'Fines de semana', 'Feriados']} active="Dias de semana" />
+        <View style={styles.adminCard}>
+          <Text style={styles.sectionTitle}>Lunes a Viernes</Text>
+          <TariffRow time="08:00 - 17:00" price={form.weekdayMorning} onPrice={(value) => setForm({ ...form, weekdayMorning: value })} />
+          <TariffRow time="17:00 - 23:00" price={form.weekdayNight} onPrice={(value) => setForm({ ...form, weekdayNight: value })} />
+        </View>
+        <View style={styles.infoCard}>
+          <Ionicons name="information-circle" size={28} color="#58c83c" />
+          <Text style={styles.bodyCopy}>Los precios especiales tienen prioridad sobre los precios normales.</Text>
+        </View>
+        <Button title="+ Agregar tarifa" onPress={() => setView('schedule')} />
+      </ScrollView>
+    );
+  }
+
+  if (view === 'schedule') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title="Horarios" onBack={() => setView('prices')} actionIcon="add" onAction={() => undefined} />
+        <View style={styles.infoCard}>
+          <Ionicons name="time-outline" size={30} color="#58c83c" />
+          <Text style={styles.bodyCopy}>Define el horario de atencion de la cancha</Text>
+        </View>
+        <Text style={styles.sectionTitle}>Horario de atencion</Text>
+        <SelectLine label="Hora de apertura" value={to12Hour(form.scheduleStart)} onPress={() => undefined} />
+        <SelectLine label="Hora de cierre" value={to12Hour(form.scheduleEnd)} onPress={() => undefined} />
+        <Text style={styles.sectionTitle}>Dias de atencion</Text>
+        <View style={styles.dayGrid}>
+          {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'].map((day) => <Text key={day} style={styles.dayChip}>{day}</Text>)}
+        </View>
+        <Text style={styles.sectionTitle}>Intervalos de reserva</Text>
+        <SelectLine label="Cada" value="30 minutos" onPress={() => undefined} />
+        <Button title={busy ? 'Guardando...' : 'Guardar horario'} onPress={saveCourt} disabled={busy} />
+      </ScrollView>
+    );
+  }
+
+  if (view === 'detail' && selected) {
+    return <AdminCourtDetail court={selected} onBack={() => setView('list')} onEdit={() => setView('form')} onCalendar={() => setView('calendar')} />;
+  }
+
+  if (view === 'calendar' && selected) {
+    return <AdminCalendar court={selected} onBack={() => setView('detail')} />;
+  }
+
+  if (view === 'blocks') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title="Bloqueos de cancha" onBack={() => setView('list')} actionIcon="add" onAction={() => setView('blockForm')} />
+        <SegmentTabs tabs={['Todos', 'Alquilada', 'Mantenimiento', 'Eventos']} active="Todos" />
+        {adminCourts.slice(0, 4).map((court, index) => (
+          <BlockRow key={court.id} court={court} index={index} />
+        ))}
+      </ScrollView>
+    );
+  }
+
+  if (view === 'blockForm') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title="Agregar bloqueo" onBack={() => setView('blocks')} />
+        <SelectLine label="Cancha *" value={selected?.name ?? 'Seleccionar cancha'} onPress={() => undefined} />
+        <SelectLine label="Fecha *" value="Seleccionar fecha" onPress={() => undefined} icon="calendar-outline" />
+        <SelectLine label="Tipo de bloqueo *" value="Alquilada todo el dia" onPress={() => undefined} />
+        <View style={styles.switchRow}>
+          <Text style={styles.sectionTitle}>Todo el dia</Text>
+          <View style={styles.switchOn}><View style={styles.switchDot} /></View>
+        </View>
+        <AdminInput label="Motivo" placeholder="Ej: Alquiler completo, evento privado..." value="" multiline />
+        <Button title="Guardar bloqueo" onPress={() => setView('blocks')} />
+      </ScrollView>
+    );
+  }
+
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.navTitle}>
-        <Text style={styles.navText}>Gestion de canchas</Text>
-        <Pressable onPress={resetForm}>
-          <Ionicons name="add-circle" size={28} color="#58c83c" />
+    <View style={styles.pageFixed}>
+      <View style={styles.adminTop}>
+        <Ionicons name="menu" size={28} color="#ffffff" />
+        <Text style={styles.navText}>Canchas</Text>
+        <Pressable style={styles.addSquare} onPress={() => { resetForm(); setView('form'); }}>
+          <Ionicons name="add" size={24} color="#ffffff" />
         </Pressable>
       </View>
-
-      <View style={styles.adminCard}>
-        <Text style={styles.sectionTitle}>{selected ? 'Editar cancha' : 'Nueva cancha'}</Text>
-        <AdminInput label="Nombre" value={form.name} onChangeText={(value) => setForm({ ...form, name: value })} />
-        <AdminInput label="Codigo opcional" value={form.code} onChangeText={(value) => setForm({ ...form, code: value })} />
-        <AdminInput label="Descripcion" value={form.description} onChangeText={(value) => setForm({ ...form, description: value })} multiline />
-        <AdminInput label="Imagen principal URL" value={form.mainImageUrl} onChangeText={(value) => setForm({ ...form, mainImageUrl: value })} />
-        <AdminInput label="Galeria URL, una por linea" value={form.gallery} onChangeText={(value) => setForm({ ...form, gallery: value })} multiline />
-        <View style={styles.choiceRow}>
-          {['GRASS_SINTETICO', 'FUTBOL_7', 'VOLEY', 'OTRO'].map((type) => (
-            <Pressable key={type} style={[styles.choice, form.type === type && styles.choiceActive]} onPress={() => setForm({ ...form, type })}>
-              <Text style={styles.choiceText}>{type.replace('_', ' ')}</Text>
-            </Pressable>
-          ))}
+      <Text style={styles.bodyCopy}>Gestiona todas las canchas de tu sede</Text>
+      <View style={styles.searchRow}>
+        <View style={styles.searchBox}>
+          <Ionicons name="search" size={20} color="#9aa4ad" />
+          <TextInput style={styles.searchInput} placeholder="Buscar cancha..." placeholderTextColor="#9aa4ad" value={query} onChangeText={setQuery} />
         </View>
-        <View style={styles.twoCols}>
-          <AdminInput label="Dimensiones" value={form.dimensions} onChangeText={(value) => setForm({ ...form, dimensions: value })} />
-          <AdminInput label="Capacidad" value={form.maxPlayers} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, maxPlayers: value })} />
-        </View>
-        <View style={styles.choiceRow}>
-          {['DISPONIBLE', 'MANTENIMIENTO', 'DESHABILITADA'].map((status) => (
-            <Pressable key={status} style={[styles.choice, form.status === status && styles.choiceActive]} onPress={() => setForm({ ...form, status })}>
-              <Text style={styles.choiceText}>{status}</Text>
-            </Pressable>
-          ))}
-        </View>
+        <Pressable style={styles.filterButton} onPress={() => setView('blocks')}>
+          <Ionicons name="filter" size={22} color="#ffffff" />
+        </Pressable>
       </View>
-
-      <View style={styles.adminCard}>
-        <Text style={styles.sectionTitle}>Precios por horario</Text>
-        <View style={styles.twoCols}>
-          <AdminInput label="L-V 08-17" value={form.weekdayMorning} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayMorning: value })} />
-          <AdminInput label="L-V 17-23" value={form.weekdayNight} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayNight: value })} />
-        </View>
-        <AdminInput label="Sab-Dom 08-23" value={form.weekend} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekend: value })} />
-      </View>
-
-      <View style={styles.adminCard}>
-        <Text style={styles.sectionTitle}>Horario de atencion</Text>
-        <View style={styles.twoCols}>
-          <AdminInput label="Inicio" value={form.scheduleStart} onChangeText={(value) => setForm({ ...form, scheduleStart: value })} />
-          <AdminInput label="Fin" value={form.scheduleEnd} onChangeText={(value) => setForm({ ...form, scheduleEnd: value })} />
-        </View>
-      </View>
-
-      <View style={styles.adminCard}>
-        <Text style={styles.sectionTitle}>Promocion</Text>
-        <AdminInput label="Nombre" value={form.promoName} onChangeText={(value) => setForm({ ...form, promoName: value })} />
-        <View style={styles.twoCols}>
-          <AdminInput label="Precio fijo" value={form.promoFixedPrice} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, promoFixedPrice: value })} />
-          <AdminInput label="Horas" value={form.promoRequiredHours} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, promoRequiredHours: value })} />
-        </View>
-      </View>
-
-      {stats && (
-        <View style={styles.summaryCard}>
-          <SummaryRow label="Reservas" value={String(stats.totalReservations)} />
-          <SummaryRow label="Confirmadas" value={String(stats.confirmedReservations)} />
-          <SummaryRow label="Canceladas" value={String(stats.cancelledReservations)} />
-          <SummaryRow label="Ingreso estimado" value={`S/ ${formatMoney(stats.projectedIncome)}`} />
-        </View>
-      )}
-
-      <Button title={busy ? 'Guardando...' : selected ? 'Actualizar cancha' : 'Crear cancha'} onPress={saveCourt} disabled={busy} />
-
-      <Text style={styles.sectionTitle}>Canchas registradas</Text>
-      {adminCourts.map((court) => (
-        <View key={court.id} style={styles.adminCourtRow}>
-          <Pressable style={styles.adminCourtMain} onPress={() => selectCourt(court)}>
-            <Text style={styles.courtName}>{court.name}</Text>
-            <Text style={styles.bodyCopy}>{court.code || 'Sin codigo'} · {court.status}</Text>
-            <Text style={styles.price}>Desde S/ {formatMoney(court.hourlyPrice)} / hora</Text>
+      <FlatList
+        data={filteredCourts}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={styles.courtList}
+        renderItem={({ item, index }) => (
+          <Pressable style={styles.managementRow} onPress={() => { selectCourt(item); setView('detail'); }}>
+            <Image source={{ uri: item.mainImageUrl || courtImages[index % courtImages.length] }} style={styles.managementThumb} />
+            <View style={styles.courtInfo}>
+              <Text style={styles.courtName}>{item.name}</Text>
+              <Text style={styles.courtDesc}>{labelCourtType(item.type)} · {item.description ?? 'Grass sintetico'}</Text>
+              <Text style={styles.price}>S/ {formatMoney(item.hourlyPrice)} / hora</Text>
+            </View>
+            <View style={styles.managementSide}>
+              <Text style={[styles.badge, statusStyle(item.status)]}>{labelCourtStatus(item.status)}</Text>
+              <Ionicons name="chevron-forward" size={20} color="#ffffff" />
+            </View>
           </Pressable>
-          <View style={styles.adminMiniActions}>
-            <Pressable onPress={() => changeStatus(court, 'DISPONIBLE')}><Ionicons name="checkmark-circle" size={24} color="#58c83c" /></Pressable>
-            <Pressable onPress={() => changeStatus(court, 'MANTENIMIENTO')}><Ionicons name="construct" size={24} color="#d7b51f" /></Pressable>
-            <Pressable onPress={() => deactivate(court)}><Ionicons name="trash" size={24} color="#ff625c" /></Pressable>
-          </View>
-        </View>
-      ))}
-    </ScrollView>
+        )}
+      />
+    </View>
   );
 }
 
@@ -745,6 +813,177 @@ function AdminInput(props: React.ComponentProps<typeof TextInput> & { label: str
     <View style={styles.adminInputWrap}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput style={[styles.adminInput, style]} placeholderTextColor="#77808a" {...rest} />
+    </View>
+  );
+}
+
+function AdminHeader({ title, onBack, actionIcon, onAction }: { title: string; onBack: () => void; actionIcon?: keyof typeof Ionicons.glyphMap; onAction?: () => void }) {
+  return (
+    <View style={styles.adminTop}>
+      <Pressable onPress={onBack}>
+        <Ionicons name="arrow-back" size={26} color="#ffffff" />
+      </Pressable>
+      <Text style={styles.navText}>{title}</Text>
+      {actionIcon ? (
+        <Pressable style={styles.addSquare} onPress={onAction}>
+          <Ionicons name={actionIcon} size={22} color="#ffffff" />
+        </Pressable>
+      ) : <View style={styles.headerSpacer} />}
+    </View>
+  );
+}
+
+function SegmentTabs({ tabs, active }: { tabs: string[]; active: string }) {
+  return (
+    <View style={styles.segmentTabs}>
+      {tabs.map((tab) => (
+        <Text key={tab} style={[styles.segmentTab, tab === active && styles.segmentTabActive]}>{tab}</Text>
+      ))}
+    </View>
+  );
+}
+
+function SelectLine({ label, value, onPress, icon = 'chevron-down' }: { label: string; value: string; onPress: () => void; icon?: keyof typeof Ionicons.glyphMap }) {
+  return (
+    <Pressable style={styles.selectLine} onPress={onPress}>
+      <View>
+        <Text style={styles.fieldLabel}>{label}</Text>
+        <Text style={styles.selectValue}>{value}</Text>
+      </View>
+      <Ionicons name={icon} size={20} color="#c8d0d5" />
+    </Pressable>
+  );
+}
+
+function TariffRow({ time, price, onPrice }: { time: string; price: string; onPrice: (value: string) => void }) {
+  return (
+    <View style={styles.tariffRow}>
+      <Ionicons name="time-outline" size={22} color="#c8d0d5" />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.tariffTime}>{time}</Text>
+        <Text style={styles.price}>S/ {Number(price || 0).toFixed(2)} / hora</Text>
+      </View>
+      <Pressable style={styles.iconBox}>
+        <Ionicons name="pencil" size={18} color="#ffffff" />
+      </Pressable>
+      <Pressable style={styles.iconBox}>
+        <Ionicons name="trash-outline" size={18} color="#ff625c" />
+      </Pressable>
+    </View>
+  );
+}
+
+function AdminCourtDetail({ court, onBack, onEdit, onCalendar }: { court: Court; onBack: () => void; onEdit: () => void; onCalendar: () => void }) {
+  return (
+    <ScrollView contentContainerStyle={styles.detailContent}>
+      <ImageBackground source={{ uri: court.mainImageUrl || courtImages[court.id % courtImages.length] }} style={styles.adminDetailHero}>
+        <View style={styles.heroShade} />
+        <Pressable style={styles.backOverlay} onPress={onBack}>
+          <Ionicons name="arrow-back" size={26} color="#ffffff" />
+        </Pressable>
+        <Text style={styles.imageCounter}>1/5</Text>
+      </ImageBackground>
+      <View style={styles.pageInner}>
+        <View style={styles.rowCenter}>
+          <Text style={styles.detailTitle}>{court.name}</Text>
+          <Text style={[styles.badge, statusStyle(court.status)]}>{labelCourtStatus(court.status)}</Text>
+        </View>
+        <Text style={styles.detailSub}>{labelCourtType(court.type)} · {court.description ?? 'Grass sintetico'}</Text>
+        <View style={styles.featureGrid}>
+          <Feature icon="people-outline" value={String(court.maxPlayers || 14)} label="Jugadores" />
+          <Feature icon="resize-outline" value={court.dimensions ?? '50m x 30m'} label="Dimensiones" />
+          <Feature icon="time-outline" value="08:00 - 23:00" label="Horario" />
+        </View>
+        <Text style={styles.greenLink}>Precio desde</Text>
+        <Text style={styles.detailPrice}>S/ {formatMoney(court.hourlyPrice)} <Text style={styles.priceUnit}>/ hora</Text></Text>
+        <Text style={styles.sectionTitle}>Caracteristicas</Text>
+        <View style={styles.featureList}>
+          {['Iluminacion', 'Estacionamiento', 'Vestuarios', 'Duchas', 'Camerinos', 'Tribuna'].map((item) => (
+            <Text key={item} style={styles.featureBullet}>● {item}</Text>
+          ))}
+        </View>
+        <View style={styles.twoCols}>
+          <Button title="Editar" variant="outline" onPress={onEdit} />
+          <Button title="Ver calendario" onPress={onCalendar} />
+        </View>
+      </View>
+    </ScrollView>
+  );
+}
+
+function Feature({ icon, value, label }: { icon: keyof typeof Ionicons.glyphMap; value: string; label: string }) {
+  return (
+    <View style={styles.featureBox}>
+      <Ionicons name={icon} size={19} color="#ffffff" />
+      <View>
+        <Text style={styles.featureValue}>{value}</Text>
+        <Text style={styles.fieldLabel}>{label}</Text>
+      </View>
+    </View>
+  );
+}
+
+function AdminCalendar({ court, onBack }: { court: Court; onBack: () => void }) {
+  const days = Array.from({ length: 35 }, (_, index) => index + 1);
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <AdminHeader title={`Calendario - ${court.name}`} onBack={onBack} actionIcon="filter" />
+      <View style={styles.calendarNav}>
+        <Ionicons name="chevron-back" size={22} color="#ffffff" />
+        <Text style={styles.navText}>Julio 2024</Text>
+        <Ionicons name="chevron-forward" size={22} color="#ffffff" />
+      </View>
+      <View style={styles.weekRow}>
+        {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'].map((day) => <Text key={day} style={styles.weekDay}>{day}</Text>)}
+      </View>
+      <View style={styles.calendarGrid}>
+        {days.map((day) => (
+          <View key={day} style={[styles.calendarDay, day === 9 && styles.calendarDayActive]}>
+            <Text style={styles.calendarNumber}>{day}</Text>
+            <View style={styles.dotRow}>
+              <View style={[styles.dot, { backgroundColor: day % 5 === 0 ? '#ff493b' : '#58c83c' }]} />
+              {day % 3 === 0 && <View style={[styles.dot, { backgroundColor: '#d7b51f' }]} />}
+            </View>
+          </View>
+        ))}
+      </View>
+      <View style={styles.legendGrid}>
+        <Legend color="#58c83c" text="Disponible" />
+        <Legend color="#d7b51f" text="Pendiente" />
+        <Legend color="#ff493b" text="Reservado" />
+        <Legend color="#9aa4ad" text="No disponible" />
+        <Legend color="#2f80ed" text="Alquilada todo el dia" />
+        <Legend color="#7b61ff" text="Mantenimiento" />
+        <Legend color="#a855f7" text="Evento privado" />
+      </View>
+      <Button title="Ver agenda diaria" onPress={() => undefined} />
+    </ScrollView>
+  );
+}
+
+function Legend({ color, text }: { color: string; text: string }) {
+  return <Text style={styles.legendText}><Text style={{ color }}>●</Text> {text}</Text>;
+}
+
+function BlockRow({ court, index }: { court: Court; index: number }) {
+  const variants = [
+    { color: '#2f80ed', title: 'Alquilada todo el dia', date: 'Martes, 9 Jul 2024' },
+    { color: '#a855f7', title: 'Evento privado', date: 'Viernes, 12 Jul 2024' },
+    { color: '#d7b51f', title: 'Mantenimiento', date: 'Sabado, 13 Jul 2024' },
+    { color: '#ff493b', title: 'No disponible', date: 'Domingo, 14 Jul 2024' }
+  ];
+  const variant = variants[index % variants.length];
+  return (
+    <View style={styles.blockRow}>
+      <View style={[styles.blockIcon, { backgroundColor: variant.color }]}>
+        <Ionicons name="calendar-outline" size={21} color="#ffffff" />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.courtName}>{variant.date}</Text>
+        <Text style={styles.bodyCopy}>{court.name}</Text>
+        <Text style={styles.bodyCopy}>00:00 - 23:59</Text>
+      </View>
+      <Text style={[styles.badge, { backgroundColor: variant.color }]}>{variant.title}</Text>
     </View>
   );
 }
@@ -866,6 +1105,29 @@ function labelStatus(status: Reservation['status']) {
   return status === 'CONFIRMADA' ? 'Confirmada' : status === 'PENDIENTE' ? 'Pendiente' : status === 'CANCELADA' ? 'Cancelada' : 'Finalizada';
 }
 
+function labelCourtType(type: Court['type']) {
+  const labels: Record<Court['type'], string> = {
+    GRASS_SINTETICO: 'Grass sintetico',
+    GRASS_NATURAL: 'Grass natural',
+    FUTBOL_5: 'Futbol 5',
+    FUTBOL_7: 'Futbol 7',
+    FUTBOL_11: 'Futbol 11',
+    VOLEY: 'Voley',
+    OTRO: 'Otro'
+  };
+  return labels[type] ?? 'Grass sintetico';
+}
+
+function labelCourtStatus(status: Court['status']) {
+  return status === 'DISPONIBLE' ? 'Disponible' : status === 'MANTENIMIENTO' ? 'Mantenimiento' : 'No disponible';
+}
+
+function statusStyle(status: Court['status']) {
+  if (status === 'DISPONIBLE') return styles.badgeOk;
+  if (status === 'MANTENIMIENTO') return styles.badgeWarn;
+  return styles.badgeOff;
+}
+
 function firstName(name: string) {
   return name.split(' ')[0] || 'jugador';
 }
@@ -974,6 +1236,7 @@ const styles = StyleSheet.create({
   rowCenter: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   badge: { overflow: 'hidden', borderRadius: 5, paddingHorizontal: 8, paddingVertical: 5, color: '#ffffff', fontSize: 12, fontWeight: '900' },
   badgeOk: { backgroundColor: '#259a2d' },
+  badgeWarn: { backgroundColor: '#8a6d16' },
   badgeOff: { backgroundColor: '#b72d2d' },
   price: { color: '#ffffff', fontSize: 12, fontWeight: '800' },
   detailScreen: { flex: 1, backgroundColor: '#020b0d' },
@@ -1019,6 +1282,54 @@ const styles = StyleSheet.create({
   adminCourtRow: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 12, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
   adminCourtMain: { flex: 1 },
   adminMiniActions: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  adminTop: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  addSquare: { width: 36, height: 36, borderRadius: 8, backgroundColor: '#42bd2d', alignItems: 'center', justifyContent: 'center' },
+  headerSpacer: { width: 36, height: 36 },
+  searchRow: { flexDirection: 'row', gap: 10, marginTop: 16, marginBottom: 8 },
+  searchBox: { flex: 1, minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  searchInput: { flex: 1, color: '#ffffff' },
+  filterButton: { width: 48, borderRadius: 8, backgroundColor: '#081719', borderWidth: 1, borderColor: '#1d363b', alignItems: 'center', justifyContent: 'center' },
+  managementRow: { minHeight: 92, borderRadius: 8, borderWidth: 1, borderColor: '#182f33', backgroundColor: '#081719', padding: 9, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  managementThumb: { width: 88, height: 62, borderRadius: 7 },
+  managementSide: { alignItems: 'flex-end', justifyContent: 'space-between', minHeight: 62 },
+  photoStrip: { flexDirection: 'row', gap: 8, marginTop: 14 },
+  photoPlaceholder: { flex: 1, height: 96, borderRadius: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: '#385057', backgroundColor: '#061214', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  photoPreview: { flex: 1, height: 96, borderRadius: 8 },
+  segmentTabs: { minHeight: 58, borderRadius: 8, backgroundColor: '#081719', borderWidth: 1, borderColor: '#10252a', flexDirection: 'row', alignItems: 'center', padding: 4, marginTop: 10 },
+  segmentTab: { flex: 1, color: '#c8d0d5', textAlign: 'center', fontWeight: '800', paddingVertical: 14, borderRadius: 7, fontSize: 12 },
+  segmentTabActive: { color: '#58c83c', backgroundColor: '#102916', borderBottomWidth: 2, borderBottomColor: '#58c83c' },
+  selectLine: { minHeight: 58, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  selectValue: { color: '#ffffff', fontSize: 15, fontWeight: '700', marginTop: 4 },
+  tariffRow: { minHeight: 82, borderTopWidth: 1, borderTopColor: '#1d363b', flexDirection: 'row', alignItems: 'center', gap: 12 },
+  tariffTime: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
+  iconBox: { width: 38, height: 38, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', alignItems: 'center', justifyContent: 'center' },
+  infoCard: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 16, marginTop: 16, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  dayGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginBottom: 16 },
+  dayChip: { overflow: 'hidden', borderRadius: 8, backgroundColor: '#2f8e21', color: '#ffffff', fontWeight: '900', paddingHorizontal: 12, paddingVertical: 12 },
+  switchRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  switchOn: { width: 52, height: 30, borderRadius: 15, backgroundColor: '#58c83c', padding: 3, alignItems: 'flex-end' },
+  switchDot: { width: 24, height: 24, borderRadius: 12, backgroundColor: '#ffffff' },
+  adminDetailHero: { height: 180, justifyContent: 'flex-end' },
+  pageInner: { padding: 20, paddingBottom: 28 },
+  imageCounter: { position: 'absolute', right: 18, bottom: 12, color: '#ffffff', backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4, fontWeight: '900' },
+  featureGrid: { flexDirection: 'row', marginTop: 18, marginBottom: 14 },
+  featureBox: { flex: 1, minHeight: 58, borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center', gap: 5, padding: 8 },
+  featureValue: { color: '#ffffff', fontWeight: '900', fontSize: 12 },
+  featureList: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 18 },
+  featureBullet: { width: '30%', color: '#c8d0d5', fontSize: 12 },
+  calendarNav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 16 },
+  weekRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 8 },
+  weekDay: { color: '#c8d0d5', width: 42, textAlign: 'center', fontWeight: '800' },
+  calendarGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  calendarDay: { width: '13.4%', aspectRatio: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  calendarDayActive: { backgroundColor: '#58c83c' },
+  calendarNumber: { color: '#ffffff', fontWeight: '900' },
+  dotRow: { flexDirection: 'row', gap: 3, marginTop: 6 },
+  dot: { width: 6, height: 6, borderRadius: 3 },
+  legendGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginVertical: 16 },
+  legendText: { color: '#c8d0d5', width: '45%', fontSize: 12 },
+  blockRow: { minHeight: 92, borderRadius: 8, borderWidth: 1, borderColor: '#182f33', backgroundColor: '#081719', padding: 12, marginTop: 10, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  blockIcon: { width: 38, height: 38, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   profileAvatar: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#173337', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginTop: 40, marginBottom: 18 },
   emptyCard: { minHeight: 120, borderRadius: 8, borderWidth: 1, borderColor: '#182f33', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 18 },
   tabs: { position: 'absolute', left: 14, right: 14, bottom: 14, height: 72, borderRadius: 8, backgroundColor: '#071315', borderWidth: 1, borderColor: '#10252a', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
