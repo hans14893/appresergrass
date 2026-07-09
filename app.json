@@ -15,8 +15,8 @@
       "package": "com.resergrass.app"
     },
     "extra": {
-      "apiUrl": "http://localhost:8080/api",
-      "wsUrl": "http://localhost:8080/ws",
+      "apiUrl": "http://192.168.1.17:8080/api",
+      "wsUrl": "http://192.168.1.17:8080/ws",
       "eas": {
         "projectId": "53e8b699-cd89-44c2-92c1-1d6248884087"
       }
