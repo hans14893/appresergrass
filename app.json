@@ -16,7 +16,10 @@
     },
     "extra": {
       "apiUrl": "http://localhost:8080/api",
-      "wsUrl": "http://localhost:8080/ws"
+      "wsUrl": "http://localhost:8080/ws",
+      "eas": {
+        "projectId": "53e8b699-cd89-44c2-92c1-1d6248884087"
+      }
     }
   }
 }

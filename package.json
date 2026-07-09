@@ -11,18 +11,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-native-async-storage/async-storage": "^2.2.0",
     "@stomp/stompjs": "^7.0.0",
-    "expo": "~51.0.28",
-    "expo-constants": "~16.0.2",
-    "expo-status-bar": "~1.12.1",
-    "react": "18.2.0",
-    "react-native": "0.74.5",
+    "expo": "~54.0.0",
+    "expo-constants": "~18.0.13",
+    "expo-status-bar": "~3.0.9",
+    "react": "^19.1.0",
+    "react-native": "^0.81.5",
     "sockjs-client": "^1.6.1"
   },
   "devDependencies": {
-    "@types/react": "~18.2.79",
+    "@types/react": "~19.1.10",
     "@types/sockjs-client": "^1.5.4",
-    "typescript": "~5.3.3"
+    "typescript": "~5.9.2"
   }
 }
