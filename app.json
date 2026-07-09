@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "Reserva Grass",
+    "slug": "appresergrass",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.resergrass.app"
+    },
+    "extra": {
+      "apiUrl": "http://localhost:8080/api",
+      "wsUrl": "http://localhost:8080/ws"
+    }
+  }
+}
