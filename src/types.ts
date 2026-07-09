@@ -90,6 +90,7 @@ export type Reservation = {
   id: number;
   clientId: number;
   clientName: string;
+  guestPhone?: string;
   courtId: number;
   courtName: string;
   reservationDate: string;

@@ -17,7 +17,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { api, setAuthToken } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AuthResponse, Client, Court, CourtStats, Reservation, Role } from './src/types';
+import { AuthResponse, Court, CourtStats, Reservation, Role } from './src/types';
 import { clearSession, getSession, saveSession } from './src/storage/session';
 
 const today = new Date();
@@ -359,11 +359,9 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
   const [dateIndex, setDateIndex] = useState(0);
   const [time, setTime] = useState('19:00');
   const [busy, setBusy] = useState(false);
-  const [clients, setClients] = useState<Client[]>([]);
-  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
-  const [clientName, setClientName] = useState('');
-  const [clientPhone, setClientPhone] = useState('');
-  const canChooseClient = session.role === 'ADMIN' || session.role === 'PERSONAL';
+  const [guestName, setGuestName] = useState('');
+  const [guestPhone, setGuestPhone] = useState('');
+  const canUseGuest = session.role === 'ADMIN' || session.role === 'PERSONAL';
 
   useEffect(() => {
     const unsubscribe = subscribeAvailability(court.id, dateOptions[dateIndex].iso, () => undefined);
@@ -372,41 +370,11 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
     };
   }, [court.id, dateIndex]);
 
-  useEffect(() => {
-    if (!canChooseClient) return;
-    api<Client[]>('/clients')
-      .then((data) => {
-        setClients(data);
-        setSelectedClientId(data[0]?.id ?? null);
-      })
-      .catch(() => setClients([]));
-  }, [canChooseClient]);
-
-  const createQuickClient = async () => {
-    if (!clientName.trim()) {
-      Alert.alert('Cliente', 'Ingresa el nombre del cliente.');
-      return;
-    }
-    try {
-      const created = await api<Client>('/clients', {
-        method: 'POST',
-        body: { fullName: clientName.trim(), phone: clientPhone.trim() || undefined }
-      });
-      setClients((current) => [created, ...current]);
-      setSelectedClientId(created.id);
-      setClientName('');
-      setClientPhone('');
-      Alert.alert('Cliente', 'Cliente creado y seleccionado.');
-    } catch (error) {
-      Alert.alert('Cliente', error instanceof Error ? error.message : 'No se pudo crear el cliente');
-    }
-  };
-
   const reserve = async () => {
     const endTime = addHour(time);
     const selectedDate = dateOptions[dateIndex];
-    if (canChooseClient && !selectedClientId) {
-      Alert.alert('Cliente requerido', 'Selecciona o crea un cliente para registrar la reserva como administrador.');
+    if (canUseGuest && !guestName.trim()) {
+      Alert.alert('Nombre requerido', 'Ingresa el nombre de la persona que llama para registrar la reserva.');
       return;
     }
 
@@ -414,7 +382,14 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       setBusy(true);
       await api<Reservation>('/reservations', {
         method: 'POST',
-        body: { courtId: court.id, clientId: selectedClientId ?? undefined, reservationDate: selectedDate.iso, startTime: time, endTime }
+        body: {
+          courtId: court.id,
+          guestName: canUseGuest ? guestName.trim() : undefined,
+          guestPhone: canUseGuest ? guestPhone.trim() || undefined : undefined,
+          reservationDate: selectedDate.iso,
+          startTime: time,
+          endTime
+        }
       });
       onReserved({ court, date: selectedDate.iso, displayDate: selectedDate.longLabel, startTime: time, endTime });
     } catch (error) {
@@ -457,21 +432,11 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
           </Pressable>
         ))}
       </View>
-      {canChooseClient && (
+      {canUseGuest && (
         <View style={styles.adminCard}>
-          <Text style={styles.sectionTitle}>Cliente de la reserva</Text>
-          {clients.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              {clients.map((client) => (
-                <Pressable key={client.id} style={[styles.choice, selectedClientId === client.id && styles.choiceActive]} onPress={() => setSelectedClientId(client.id)}>
-                  <Text style={styles.choiceText}>{client.fullName}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          )}
-          <AdminInput label="Nuevo cliente" placeholder="Nombre del cliente" value={clientName} onChangeText={setClientName} />
-          <AdminInput label="Celular" placeholder="987 654 321" value={clientPhone} onChangeText={setClientPhone} keyboardType="phone-pad" />
-          <Button title="Crear y seleccionar cliente" variant="outline" onPress={createQuickClient} />
+          <Text style={styles.sectionTitle}>Datos de quien llama</Text>
+          <AdminInput label="Nombre" placeholder="Ej: Juan Perez" value={guestName} onChangeText={setGuestName} />
+          <AdminInput label="Celular" placeholder="987 654 321" value={guestPhone} onChangeText={setGuestPhone} keyboardType="phone-pad" />
         </View>
       )}
       <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active} />
