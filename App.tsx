@@ -17,7 +17,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { api, setAuthToken } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AuthResponse, Court, Reservation, Role } from './src/types';
+import { AuthResponse, Court, CourtStats, Reservation, Role } from './src/types';
 import { clearSession, getSession, saveSession } from './src/storage/session';
 
 const today = new Date();
@@ -31,7 +31,7 @@ const courtImages = [
 ];
 
 type AuthMode = 'welcome' | 'login' | 'register' | 'forgot';
-type HomeTab = 'home' | 'reservations' | 'courts' | 'profile';
+type HomeTab = 'home' | 'reservations' | 'courts' | 'admin' | 'profile';
 
 type ReservationDraft = {
   court: Court;
@@ -278,8 +278,9 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
       {tab === 'home' && <Dashboard session={session} courts={courts} reservations={reservations} openCourt={openCourt} />}
       {tab === 'reservations' && <ReservationsScreen reservations={reservations} canManage={canManage} refresh={loadReservations} />}
       {tab === 'courts' && <CourtsScreen courts={courts} openCourt={openCourt} />}
+      {tab === 'admin' && <AdminCourtsScreen courts={courts} refresh={loadCourts} />}
       {tab === 'profile' && <ProfileScreen session={session} onLogout={onLogout} />}
-      <BottomTabs active={tab} onChange={setTab} />
+      <BottomTabs active={tab} onChange={setTab} isAdmin={session.role === 'ADMIN'} />
     </View>
   );
 }
@@ -477,6 +478,277 @@ function ReservationsScreen({ reservations, canManage, refresh }: { reservations
   );
 }
 
+function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () => void }) {
+  const [adminCourts, setAdminCourts] = useState<Court[]>(courts);
+  const [selected, setSelected] = useState<Court | null>(null);
+  const [stats, setStats] = useState<CourtStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({
+    name: '',
+    code: '',
+    description: '',
+    mainImageUrl: '',
+    gallery: '',
+    type: 'GRASS_SINTETICO',
+    dimensions: '',
+    maxPlayers: '10',
+    status: 'DISPONIBLE',
+    weekdayMorning: '60',
+    weekdayNight: '80',
+    weekend: '100',
+    scheduleStart: '08:00',
+    scheduleEnd: '23:00',
+    promoName: '2 horas por S/150',
+    promoFixedPrice: '150',
+    promoRequiredHours: '2'
+  });
+
+  useEffect(() => {
+    loadAdminCourts();
+  }, []);
+
+  const loadAdminCourts = async () => {
+    try {
+      const data = await api<Court[]>('/courts/all');
+      setAdminCourts(data);
+    } catch (error) {
+      setAdminCourts(courts);
+    }
+  };
+
+  const selectCourt = async (court: Court) => {
+    setSelected(court);
+    setForm({
+      name: court.name,
+      code: court.code ?? '',
+      description: court.description ?? '',
+      mainImageUrl: court.mainImageUrl ?? '',
+      gallery: (court.gallery ?? []).join('\n'),
+      type: court.type ?? 'GRASS_SINTETICO',
+      dimensions: court.dimensions ?? '',
+      maxPlayers: String(court.maxPlayers ?? 10),
+      status: court.status ?? 'DISPONIBLE',
+      weekdayMorning: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKDAY' && rule.startTime === '08:00')?.hourlyPrice ?? 60),
+      weekdayNight: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKDAY' && rule.startTime === '17:00')?.hourlyPrice ?? 80),
+      weekend: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKEND')?.hourlyPrice ?? 100),
+      scheduleStart: court.schedules?.[0]?.startTime ?? '08:00',
+      scheduleEnd: court.schedules?.[0]?.endTime ?? '23:00',
+      promoName: court.promotions?.[0]?.name ?? '2 horas por S/150',
+      promoFixedPrice: String(court.promotions?.[0]?.fixedPrice ?? 150),
+      promoRequiredHours: String(court.promotions?.[0]?.requiredHours ?? 2)
+    });
+    try {
+      setStats(await api<CourtStats>(`/courts/${court.id}/stats`));
+    } catch {
+      setStats(null);
+    }
+  };
+
+  const resetForm = () => {
+    setSelected(null);
+    setStats(null);
+    setForm({
+      name: '',
+      code: '',
+      description: '',
+      mainImageUrl: '',
+      gallery: '',
+      type: 'GRASS_SINTETICO',
+      dimensions: '',
+      maxPlayers: '10',
+      status: 'DISPONIBLE',
+      weekdayMorning: '60',
+      weekdayNight: '80',
+      weekend: '100',
+      scheduleStart: '08:00',
+      scheduleEnd: '23:00',
+      promoName: '2 horas por S/150',
+      promoFixedPrice: '150',
+      promoRequiredHours: '2'
+    });
+  };
+
+  const saveCourt = async () => {
+    if (!form.name.trim()) {
+      Alert.alert('Cancha', 'Ingresa el nombre de la cancha.');
+      return;
+    }
+
+    const schedules = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'].map((dayOfWeek) => ({
+      dayOfWeek,
+      startTime: form.scheduleStart,
+      endTime: form.scheduleEnd,
+      active: true
+    }));
+
+    const body = {
+      name: form.name.trim(),
+      code: form.code.trim() || undefined,
+      description: form.description.trim() || undefined,
+      mainImageUrl: form.mainImageUrl.trim() || undefined,
+      gallery: form.gallery.split('\n').map((item) => item.trim()).filter(Boolean),
+      type: form.type,
+      dimensions: form.dimensions.trim() || undefined,
+      maxPlayers: Number(form.maxPlayers || 0),
+      status: form.status,
+      active: form.status !== 'DESHABILITADA',
+      priceRules: [
+        { dayType: 'WEEKDAY', startTime: '08:00', endTime: '17:00', hourlyPrice: Number(form.weekdayMorning || 0), active: true },
+        { dayType: 'WEEKDAY', startTime: '17:00', endTime: '23:00', hourlyPrice: Number(form.weekdayNight || 0), active: true },
+        { dayType: 'WEEKEND', startTime: '08:00', endTime: '23:00', hourlyPrice: Number(form.weekend || 0), active: true }
+      ],
+      schedules,
+      promotions: form.promoName.trim()
+        ? [{
+          name: form.promoName.trim(),
+          type: 'FIXED_PRICE',
+          fixedPrice: Number(form.promoFixedPrice || 0),
+          requiredHours: Number(form.promoRequiredHours || 0),
+          active: true
+        }]
+        : []
+    };
+
+    try {
+      setBusy(true);
+      if (selected) {
+        await api<Court>(`/courts/${selected.id}`, { method: 'PUT', body });
+      } else {
+        await api<Court>('/courts', { method: 'POST', body });
+      }
+      await loadAdminCourts();
+      await refresh();
+      resetForm();
+      Alert.alert('Cancha', 'Cambios guardados correctamente.');
+    } catch (error) {
+      Alert.alert('Cancha', error instanceof Error ? error.message : 'No se pudo guardar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeStatus = async (court: Court, status: string) => {
+    try {
+      await api<Court>(`/courts/${court.id}/status?status=${status}`, { method: 'PATCH' });
+      await loadAdminCourts();
+      await refresh();
+    } catch (error) {
+      Alert.alert('Estado', error instanceof Error ? error.message : 'No se pudo cambiar el estado');
+    }
+  };
+
+  const deactivate = async (court: Court) => {
+    try {
+      await api<void>(`/courts/${court.id}`, { method: 'DELETE' });
+      await loadAdminCourts();
+      await refresh();
+    } catch (error) {
+      Alert.alert('Eliminar', error instanceof Error ? error.message : 'No se pudo desactivar');
+    }
+  };
+
+  return (
+    <ScrollView contentContainerStyle={styles.page}>
+      <View style={styles.navTitle}>
+        <Text style={styles.navText}>Gestion de canchas</Text>
+        <Pressable onPress={resetForm}>
+          <Ionicons name="add-circle" size={28} color="#58c83c" />
+        </Pressable>
+      </View>
+
+      <View style={styles.adminCard}>
+        <Text style={styles.sectionTitle}>{selected ? 'Editar cancha' : 'Nueva cancha'}</Text>
+        <AdminInput label="Nombre" value={form.name} onChangeText={(value) => setForm({ ...form, name: value })} />
+        <AdminInput label="Codigo opcional" value={form.code} onChangeText={(value) => setForm({ ...form, code: value })} />
+        <AdminInput label="Descripcion" value={form.description} onChangeText={(value) => setForm({ ...form, description: value })} multiline />
+        <AdminInput label="Imagen principal URL" value={form.mainImageUrl} onChangeText={(value) => setForm({ ...form, mainImageUrl: value })} />
+        <AdminInput label="Galeria URL, una por linea" value={form.gallery} onChangeText={(value) => setForm({ ...form, gallery: value })} multiline />
+        <View style={styles.choiceRow}>
+          {['GRASS_SINTETICO', 'FUTBOL_7', 'VOLEY', 'OTRO'].map((type) => (
+            <Pressable key={type} style={[styles.choice, form.type === type && styles.choiceActive]} onPress={() => setForm({ ...form, type })}>
+              <Text style={styles.choiceText}>{type.replace('_', ' ')}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={styles.twoCols}>
+          <AdminInput label="Dimensiones" value={form.dimensions} onChangeText={(value) => setForm({ ...form, dimensions: value })} />
+          <AdminInput label="Capacidad" value={form.maxPlayers} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, maxPlayers: value })} />
+        </View>
+        <View style={styles.choiceRow}>
+          {['DISPONIBLE', 'MANTENIMIENTO', 'DESHABILITADA'].map((status) => (
+            <Pressable key={status} style={[styles.choice, form.status === status && styles.choiceActive]} onPress={() => setForm({ ...form, status })}>
+              <Text style={styles.choiceText}>{status}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.adminCard}>
+        <Text style={styles.sectionTitle}>Precios por horario</Text>
+        <View style={styles.twoCols}>
+          <AdminInput label="L-V 08-17" value={form.weekdayMorning} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayMorning: value })} />
+          <AdminInput label="L-V 17-23" value={form.weekdayNight} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayNight: value })} />
+        </View>
+        <AdminInput label="Sab-Dom 08-23" value={form.weekend} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekend: value })} />
+      </View>
+
+      <View style={styles.adminCard}>
+        <Text style={styles.sectionTitle}>Horario de atencion</Text>
+        <View style={styles.twoCols}>
+          <AdminInput label="Inicio" value={form.scheduleStart} onChangeText={(value) => setForm({ ...form, scheduleStart: value })} />
+          <AdminInput label="Fin" value={form.scheduleEnd} onChangeText={(value) => setForm({ ...form, scheduleEnd: value })} />
+        </View>
+      </View>
+
+      <View style={styles.adminCard}>
+        <Text style={styles.sectionTitle}>Promocion</Text>
+        <AdminInput label="Nombre" value={form.promoName} onChangeText={(value) => setForm({ ...form, promoName: value })} />
+        <View style={styles.twoCols}>
+          <AdminInput label="Precio fijo" value={form.promoFixedPrice} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, promoFixedPrice: value })} />
+          <AdminInput label="Horas" value={form.promoRequiredHours} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, promoRequiredHours: value })} />
+        </View>
+      </View>
+
+      {stats && (
+        <View style={styles.summaryCard}>
+          <SummaryRow label="Reservas" value={String(stats.totalReservations)} />
+          <SummaryRow label="Confirmadas" value={String(stats.confirmedReservations)} />
+          <SummaryRow label="Canceladas" value={String(stats.cancelledReservations)} />
+          <SummaryRow label="Ingreso estimado" value={`S/ ${formatMoney(stats.projectedIncome)}`} />
+        </View>
+      )}
+
+      <Button title={busy ? 'Guardando...' : selected ? 'Actualizar cancha' : 'Crear cancha'} onPress={saveCourt} disabled={busy} />
+
+      <Text style={styles.sectionTitle}>Canchas registradas</Text>
+      {adminCourts.map((court) => (
+        <View key={court.id} style={styles.adminCourtRow}>
+          <Pressable style={styles.adminCourtMain} onPress={() => selectCourt(court)}>
+            <Text style={styles.courtName}>{court.name}</Text>
+            <Text style={styles.bodyCopy}>{court.code || 'Sin codigo'} · {court.status}</Text>
+            <Text style={styles.price}>Desde S/ {formatMoney(court.hourlyPrice)} / hora</Text>
+          </Pressable>
+          <View style={styles.adminMiniActions}>
+            <Pressable onPress={() => changeStatus(court, 'DISPONIBLE')}><Ionicons name="checkmark-circle" size={24} color="#58c83c" /></Pressable>
+            <Pressable onPress={() => changeStatus(court, 'MANTENIMIENTO')}><Ionicons name="construct" size={24} color="#d7b51f" /></Pressable>
+            <Pressable onPress={() => deactivate(court)}><Ionicons name="trash" size={24} color="#ff625c" /></Pressable>
+          </View>
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function AdminInput(props: React.ComponentProps<typeof TextInput> & { label: string }) {
+  const { label, style, ...rest } = props;
+  return (
+    <View style={styles.adminInputWrap}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput style={[styles.adminInput, style]} placeholderTextColor="#77808a" {...rest} />
+    </View>
+  );
+}
+
 function ProfileScreen({ session, onLogout }: { session: AuthResponse; onLogout: () => void }) {
   return (
     <View style={styles.page}>
@@ -556,11 +828,12 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BottomTabs({ active, onChange }: { active: HomeTab; onChange: (tab: HomeTab) => void }) {
+function BottomTabs({ active, onChange, isAdmin }: { active: HomeTab; onChange: (tab: HomeTab) => void; isAdmin: boolean }) {
   const tabs: Array<{ key: HomeTab; icon: keyof typeof Ionicons.glyphMap; label: string }> = [
     { key: 'home', icon: 'home', label: 'Inicio' },
     { key: 'reservations', icon: 'calendar-outline', label: 'Reservas' },
     { key: 'courts', icon: 'football-outline', label: 'Canchas' },
+    ...(isAdmin ? [{ key: 'admin' as HomeTab, icon: 'settings' as keyof typeof Ionicons.glyphMap, label: 'Admin' }] : []),
     { key: 'profile', icon: 'person', label: 'Perfil' }
   ];
 
@@ -735,6 +1008,17 @@ const styles = StyleSheet.create({
   reservationFullCard: { marginBottom: 12 },
   adminActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 18, paddingRight: 8 },
   danger: { color: '#ff625c', fontWeight: '900' },
+  adminCard: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 14, marginTop: 12, gap: 10 },
+  adminInputWrap: { flex: 1, gap: 5 },
+  adminInput: { minHeight: 46, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', color: '#ffffff', paddingHorizontal: 12, paddingVertical: 9 },
+  twoCols: { flexDirection: 'row', gap: 10 },
+  choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  choice: { borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', paddingHorizontal: 10, paddingVertical: 8, backgroundColor: '#061214' },
+  choiceActive: { borderColor: '#58c83c', backgroundColor: '#12351c' },
+  choiceText: { color: '#ffffff', fontSize: 12, fontWeight: '800' },
+  adminCourtRow: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 12, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  adminCourtMain: { flex: 1 },
+  adminMiniActions: { flexDirection: 'row', gap: 10, alignItems: 'center' },
   profileAvatar: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#173337', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginTop: 40, marginBottom: 18 },
   emptyCard: { minHeight: 120, borderRadius: 8, borderWidth: 1, borderColor: '#182f33', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 18 },
   tabs: { position: 'absolute', left: 14, right: 14, bottom: 14, height: 72, borderRadius: 8, backgroundColor: '#071315', borderWidth: 1, borderColor: '#10252a', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around' },
