@@ -76,6 +76,16 @@ export type CourtStats = {
   projectedIncome: number;
 };
 
+export type Client = {
+  id: number;
+  userId: number;
+  fullName: string;
+  email: string;
+  phone?: string;
+  documentNumber?: string;
+  address?: string;
+};
+
 export type Reservation = {
   id: number;
   clientId: number;

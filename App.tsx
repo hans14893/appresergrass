@@ -17,7 +17,7 @@ import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { api, setAuthToken } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AuthResponse, Court, CourtStats, Reservation, Role } from './src/types';
+import { AuthResponse, Client, Court, CourtStats, Reservation, Role } from './src/types';
 import { clearSession, getSession, saveSession } from './src/storage/session';
 
 const today = new Date();
@@ -259,6 +259,7 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
     return (
       <CourtDetailScreen
         court={selectedCourt}
+        session={session}
         onBack={() => setScreen('tabs')}
         onReserved={(createdDraft) => {
           setDraft(createdDraft);
@@ -354,10 +355,15 @@ function CourtsScreen({ courts, openCourt }: { courts: Court[]; openCourt: (cour
   );
 }
 
-function CourtDetailScreen({ court, onBack, onReserved }: { court: Court; onBack: () => void; onReserved: (draft: ReservationDraft) => void }) {
+function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Court; session: AuthResponse; onBack: () => void; onReserved: (draft: ReservationDraft) => void }) {
   const [dateIndex, setDateIndex] = useState(0);
   const [time, setTime] = useState('19:00');
   const [busy, setBusy] = useState(false);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
+  const [clientName, setClientName] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const canChooseClient = session.role === 'ADMIN' || session.role === 'PERSONAL';
 
   useEffect(() => {
     const unsubscribe = subscribeAvailability(court.id, dateOptions[dateIndex].iso, () => undefined);
@@ -366,15 +372,49 @@ function CourtDetailScreen({ court, onBack, onReserved }: { court: Court; onBack
     };
   }, [court.id, dateIndex]);
 
+  useEffect(() => {
+    if (!canChooseClient) return;
+    api<Client[]>('/clients')
+      .then((data) => {
+        setClients(data);
+        setSelectedClientId(data[0]?.id ?? null);
+      })
+      .catch(() => setClients([]));
+  }, [canChooseClient]);
+
+  const createQuickClient = async () => {
+    if (!clientName.trim()) {
+      Alert.alert('Cliente', 'Ingresa el nombre del cliente.');
+      return;
+    }
+    try {
+      const created = await api<Client>('/clients', {
+        method: 'POST',
+        body: { fullName: clientName.trim(), phone: clientPhone.trim() || undefined }
+      });
+      setClients((current) => [created, ...current]);
+      setSelectedClientId(created.id);
+      setClientName('');
+      setClientPhone('');
+      Alert.alert('Cliente', 'Cliente creado y seleccionado.');
+    } catch (error) {
+      Alert.alert('Cliente', error instanceof Error ? error.message : 'No se pudo crear el cliente');
+    }
+  };
+
   const reserve = async () => {
     const endTime = addHour(time);
     const selectedDate = dateOptions[dateIndex];
+    if (canChooseClient && !selectedClientId) {
+      Alert.alert('Cliente requerido', 'Selecciona o crea un cliente para registrar la reserva como administrador.');
+      return;
+    }
 
     try {
       setBusy(true);
       await api<Reservation>('/reservations', {
         method: 'POST',
-        body: { courtId: court.id, reservationDate: selectedDate.iso, startTime: time, endTime }
+        body: { courtId: court.id, clientId: selectedClientId ?? undefined, reservationDate: selectedDate.iso, startTime: time, endTime }
       });
       onReserved({ court, date: selectedDate.iso, displayDate: selectedDate.longLabel, startTime: time, endTime });
     } catch (error) {
@@ -417,6 +457,23 @@ function CourtDetailScreen({ court, onBack, onReserved }: { court: Court; onBack
           </Pressable>
         ))}
       </View>
+      {canChooseClient && (
+        <View style={styles.adminCard}>
+          <Text style={styles.sectionTitle}>Cliente de la reserva</Text>
+          {clients.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {clients.map((client) => (
+                <Pressable key={client.id} style={[styles.choice, selectedClientId === client.id && styles.choiceActive]} onPress={() => setSelectedClientId(client.id)}>
+                  <Text style={styles.choiceText}>{client.fullName}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+          <AdminInput label="Nuevo cliente" placeholder="Nombre del cliente" value={clientName} onChangeText={setClientName} />
+          <AdminInput label="Celular" placeholder="987 654 321" value={clientPhone} onChangeText={setClientPhone} keyboardType="phone-pad" />
+          <Button title="Crear y seleccionar cliente" variant="outline" onPress={createQuickClient} />
+        </View>
+      )}
       <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active} />
     </ScrollView>
   );
