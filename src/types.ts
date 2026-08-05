@@ -20,6 +20,13 @@ export type AuthResponse = {
   role: Role;
 };
 
+export type RegistrationResponse = {
+  email: string;
+  message: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+};
+
 export type Court = {
   id: number;
   name: string;

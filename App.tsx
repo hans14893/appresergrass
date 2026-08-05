@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PaymentConfig, Reservation, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PaymentConfig, RegistrationResponse, Reservation, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -48,7 +48,7 @@ const courtImages = [
   'https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=900&q=80'
 ];
 
-type AuthMode = 'welcome' | 'login' | 'register' | 'forgot';
+type AuthMode = 'welcome' | 'login' | 'register' | 'verify' | 'forgot';
 type HomeTab = 'home' | 'reservations' | 'courts' | 'admin' | 'profile';
 
 type ReservationDraft = {
@@ -145,8 +145,22 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
   const [phone, setPhone] = useState('');
   const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [resendRemaining, setResendRemaining] = useState(0);
+
+  useEffect(() => {
+    if (mode !== 'verify' || resendRemaining <= 0) return;
+    const timer = setInterval(() => setResendRemaining((current) => Math.max(0, current - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [mode, resendRemaining > 0]);
 
   const submit = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (mode === 'register' && (!names.trim() || !lastNames.trim())) {
+      Alert.alert('Nombre completo', 'Ingresa tus nombres y apellidos.');
+      return;
+    }
     if (mode === 'register' && phone.length !== 9) {
       Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
       return;
@@ -155,22 +169,108 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
       Alert.alert('Contraseñas', 'La confirmación no coincide.');
       return;
     }
+    if (mode === 'register' && password.length < 8) {
+      Alert.alert('Contraseña', 'La contraseña debe tener al menos 8 caracteres.');
+      return;
+    }
 
     try {
       setBusy(true);
-      const payload = mode === 'login'
-        ? await api<AuthResponse>('/auth/login', { method: 'POST', body: { email, password } })
-        : await api<AuthResponse>('/auth/register', {
+      if (mode === 'login') {
+        const payload = await api<AuthResponse>('/auth/login', {
           method: 'POST',
-          body: { fullName: `${names} ${lastNames}`.trim(), email, password, phone }
+          body: { email: normalizedEmail, password }
         });
-      await onAuth(payload, mode === 'register' || remember);
+        await onAuth(payload, remember);
+      } else {
+        const payload = await api<RegistrationResponse>('/auth/register', {
+          method: 'POST',
+          body: { fullName: `${names.trim()} ${lastNames.trim()}`, email: normalizedEmail, password, phone }
+        });
+        setVerificationEmail(payload.email);
+        setVerificationCode('');
+        setResendRemaining(payload.resendAfterSeconds);
+        setMode('verify');
+      }
     } catch (error) {
       Alert.alert('No se pudo ingresar', error instanceof Error ? error.message : 'Error desconocido');
     } finally {
       setBusy(false);
     }
   };
+
+  const verifyEmail = async () => {
+    if (verificationCode.length !== 6) {
+      Alert.alert('Código', 'Ingresa los 6 dígitos enviados a tu correo.');
+      return;
+    }
+    try {
+      setBusy(true);
+      const auth = await api<AuthResponse>('/auth/verify-email', {
+        method: 'POST',
+        body: { email: verificationEmail, code: verificationCode }
+      });
+      await onAuth(auth, true);
+    } catch (error) {
+      Alert.alert('No se pudo verificar', error instanceof Error ? error.message : 'Error desconocido');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    if (resendRemaining > 0) return;
+    try {
+      setBusy(true);
+      const payload = await api<RegistrationResponse>('/auth/resend-verification', {
+        method: 'POST',
+        body: { email: verificationEmail }
+      });
+      setVerificationCode('');
+      setResendRemaining(payload.resendAfterSeconds);
+      Alert.alert('Código enviado', payload.message);
+    } catch (error) {
+      Alert.alert('No se pudo reenviar', error instanceof Error ? error.message : 'Error desconocido');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (mode === 'verify') {
+    return (
+      <AuthShell onBack={() => setMode('register')}>
+        <View style={styles.forgotIcon}>
+          <Ionicons name="shield-checkmark" size={44} color="#ffffff" />
+        </View>
+        <Text style={styles.authTitle}>Verifica tu <Text style={styles.greenText}>correo</Text></Text>
+        <Text style={styles.centerCopy}>
+          Enviamos un código de 6 dígitos a {verificationEmail}. El código vence en 10 minutos.
+        </Text>
+        <Field
+          icon="keypad-outline"
+          label="Código de verificación"
+          placeholder="000000"
+          value={verificationCode}
+          onChangeText={(value) => setVerificationCode(value.replace(/\D/g, '').slice(0, 6))}
+          keyboardType="number-pad"
+          maxLength={6}
+        />
+        <Button
+          title={busy ? 'Verificando...' : 'Verificar y continuar'}
+          onPress={verifyEmail}
+          disabled={busy || verificationCode.length !== 6}
+        />
+        <Pressable onPress={resendVerification} disabled={busy || resendRemaining > 0}>
+          <Text style={[styles.mutedCenter, resendRemaining === 0 && styles.greenLink]}>
+            {resendRemaining > 0 ? `Reenviar código en ${resendRemaining}s` : 'Reenviar código'}
+          </Text>
+        </Pressable>
+        <Pressable onPress={() => setMode('register')}>
+          <Text style={styles.mutedCenter}>Corregir mis datos</Text>
+        </Pressable>
+      </AuthShell>
+    );
+  }
 
   if (mode === 'welcome') {
     return (
