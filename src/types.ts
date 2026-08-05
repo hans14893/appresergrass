@@ -4,6 +4,14 @@ export type CourtType = 'GRASS_SINTETICO' | 'GRASS_NATURAL' | 'FUTBOL_5' | 'FUTB
 export type PriceDayType = 'WEEKDAY' | 'WEEKEND' | 'HOLIDAY' | 'SPECIFIC_DAY';
 export type PromotionType = 'FIXED_PRICE' | 'PERCENTAGE_DISCOUNT' | 'HAPPY_HOUR';
 
+export type AdminUser = {
+  id: number;
+  fullName: string;
+  email: string;
+  phone?: string;
+  role: Role;
+  enabled: boolean;
+};
 export type AuthResponse = {
   token: string;
   userId: number;
@@ -88,7 +96,7 @@ export type Client = {
 
 export type Reservation = {
   id: number;
-  clientId: number;
+  clientId?: number;
   clientName: string;
   guestPhone?: string;
   courtId: number;
@@ -98,6 +106,25 @@ export type Reservation = {
   endTime: string;
   status: 'PENDIENTE' | 'CONFIRMADA' | 'CANCELADA' | 'FINALIZADA';
   totalAmount: number;
-  paymentStatus: 'PENDIENTE' | 'ADELANTO' | 'PAGADO';
+  paymentStatus: 'PENDIENTE_PAGO' | 'EN_REVISION' | 'PAGO_EN_LOCAL' | 'RECHAZADO' | 'PAGADO';
+  paymentExpiresAt?: string;
+  paymentMethod?: string;
+  paymentRejectionReason?: string;
   notes?: string;
+};
+
+export type CalendarSlot = {
+  courtId: number;
+  courtName: string;
+  startTime: string;
+  endTime: string;
+  status: 'DISPONIBLE' | 'PENDIENTE' | 'RESERVADO' | 'MANTENIMIENTO' | 'NO_DISPONIBLE';
+  reservationId?: number;
+};
+export type PaymentConfig = {
+  ownerName: string;
+  yapePhoneNumber: string;
+  whatsappPhoneNumber: string;
+  yapeQrUrl: string;
+  paymentTimeoutMinutes: number;
 };

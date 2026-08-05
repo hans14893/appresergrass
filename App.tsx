@@ -5,8 +5,9 @@ import {
   FlatList,
   Image,
   ImageBackground,
+  Linking,
+  Modal,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,14 +15,31 @@ import {
   View
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { api, setAuthToken } from './src/api/client';
+import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AuthResponse, Court, CourtStats, Reservation, Role } from './src/types';
-import { clearSession, getSession, saveSession } from './src/storage/session';
+import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PaymentConfig, Reservation, Role } from './src/types';
+import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
-const today = new Date();
-const todayIso = today.toISOString().slice(0, 10);
+const APP_TIME_ZONE = 'America/Lima';
+
+function getAppDateIso(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: APP_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  return `${year}-${month}-${day}`;
+}
+
+const todayIso = getAppDateIso();
+const SESSION_LOAD_TIMEOUT_MS = 2_500;
 const heroImage = 'https://images.unsplash.com/photo-1556056504-5c7696c4c28d?auto=format&fit=crop&w=1200&q=80';
 const courtImages = [
   'https://images.unsplash.com/photo-1624880357913-a8539238245b?auto=format&fit=crop&w=900&q=80',
@@ -35,6 +53,7 @@ type HomeTab = 'home' | 'reservations' | 'courts' | 'admin' | 'profile';
 
 type ReservationDraft = {
   court: Court;
+  reservation: Reservation;
   date: string;
   displayDate: string;
   startTime: string;
@@ -46,19 +65,54 @@ export default function App() {
   const [loadingSession, setLoadingSession] = useState(true);
 
   useEffect(() => {
-    getSession().then((stored) => {
-      if (stored) {
-        setAuthToken(stored.token);
-        setSession(stored);
-      }
-      setLoadingSession(false);
+    setUnauthorizedHandler(async () => {
+      setAuthToken(null);
+      setSession(null);
+      await clearSession();
     });
+
+    Promise.race<AuthResponse | null>([
+      getSession(),
+      new Promise((resolve) => setTimeout(() => resolve(null), SESSION_LOAD_TIMEOUT_MS))
+    ])
+      .then((stored) => {
+        if (stored) {
+          setAuthToken(stored.token);
+          setSession(stored);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setLoadingSession(false));
+
+    return () => setUnauthorizedHandler(null);
   }, []);
 
-  const onAuth = async (auth: AuthResponse) => {
+  useEffect(() => {
+    if (!session) return;
+    const expiration = getTokenExpirationMs(session.token);
+    if (expiration === null) return;
+    const expireSession = () => {
+      setAuthToken(null);
+      setSession(null);
+      void clearSession();
+    };
+    const remainingMs = expiration - Date.now();
+    if (remainingMs <= 0) {
+      expireSession();
+      return;
+    }
+    const timeout = setTimeout(expireSession, remainingMs);
+    return () => clearTimeout(timeout);
+  }, [session]);
+
+  const onAuth = async (auth: AuthResponse, shouldRemember: boolean) => {
     setAuthToken(auth.token);
     setSession(auth);
-    await saveSession(auth);
+    if (shouldRemember) {
+      await saveSession(auth);
+    } else {
+      await clearSession();
+    }
   };
 
   const logout = async () => {
@@ -67,19 +121,21 @@ export default function App() {
     await clearSession();
   };
 
-  if (loadingSession) {
-    return <Centered text="Cargando sesión..." />;
-  }
-
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar style="light" />
-      {session ? <HomeScreen session={session} onLogout={logout} /> : <AuthScreen onAuth={onAuth} />}
-    </SafeAreaView>
+    <SafeAreaProvider>
+      {loadingSession ? (
+        <Centered text="Cargando sesión..." />
+      ) : (
+        <SafeAreaView style={styles.safe}>
+          <StatusBar style="light" />
+          {session ? <HomeScreen session={session} onLogout={logout} /> : <AuthScreen onAuth={onAuth} />}
+        </SafeAreaView>
+      )}
+    </SafeAreaProvider>
   );
 }
 
-function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
+function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: boolean) => Promise<void> }) {
   const [mode, setMode] = useState<AuthMode>('welcome');
   const [names, setNames] = useState('');
   const [lastNames, setLastNames] = useState('');
@@ -91,6 +147,10 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    if (mode === 'register' && phone.length !== 9) {
+      Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
+      return;
+    }
     if (mode === 'register' && password !== confirmPassword) {
       Alert.alert('Contraseñas', 'La confirmación no coincide.');
       return;
@@ -104,7 +164,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
           method: 'POST',
           body: { fullName: `${names} ${lastNames}`.trim(), email, password, phone }
         });
-      onAuth(payload);
+      await onAuth(payload, mode === 'register' || remember);
     } catch (error) {
       Alert.alert('No se pudo ingresar', error instanceof Error ? error.message : 'Error desconocido');
     } finally {
@@ -124,10 +184,6 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
         <View style={styles.welcomeActions}>
           <Button title="Iniciar sesión" onPress={() => setMode('login')} />
           <Button title="Crear cuenta" variant="outline" onPress={() => setMode('register')} />
-          <Pressable style={styles.guestButton} onPress={() => setMode('login')}>
-            <Ionicons name="scan-outline" size={18} color="#ffffff" />
-            <Text style={styles.guestText}>Explorar como invitado</Text>
-          </Pressable>
         </View>
       </ImageBackground>
     );
@@ -152,10 +208,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
 
   return (
     <AuthShell onBack={() => setMode('welcome')}>
-      <Text style={styles.authTitle}>
-        {mode === 'login' ? 'Bienvenido ' : 'Crear cuenta'}
-        {mode === 'login' && <Text style={styles.greenText}>de vuelta</Text>}
-      </Text>
+      <Text style={styles.authTitle}>{mode === 'login' ? 'Bienvenido' : 'Crear cuenta'}</Text>
       <Text style={styles.authSub}>{mode === 'login' ? 'Inicia sesión para continuar' : 'Únete a ReserGrass'}</Text>
 
       {mode === 'register' && (
@@ -165,7 +218,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
         </>
       )}
       <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987 654 321" value={phone} onChangeText={setPhone} keyboardType="phone-pad" />}
+      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987 654 321" value={phone} onChangeText={(value) => setPhone(toNineDigits(value))} keyboardType="number-pad" maxLength={9} />}
       <Field icon="lock-closed" label="Contraseña" placeholder="••••••••••" value={password} onChangeText={setPassword} secureTextEntry />
       {mode === 'register' && <Field icon="lock-closed-outline" label="Confirmar contraseña" placeholder="••••••••••" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />}
 
@@ -183,15 +236,6 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse) => void }) {
 
       <Button title={busy ? 'Procesando...' : mode === 'login' ? 'Iniciar sesión' : 'Crear mi cuenta'} onPress={submit} disabled={busy} />
 
-      {mode === 'login' && (
-        <>
-          <Text style={styles.separator}>—  o continuar con  —</Text>
-          <View style={styles.socialRow}>
-            <SocialButton name="logo-google" text="Google" />
-            <SocialButton name="logo-facebook" text="Facebook" />
-          </View>
-        </>
-      )}
 
       <Pressable onPress={() => setMode(mode === 'login' ? 'register' : 'login')}>
         <Text style={styles.mutedCenter}>
@@ -241,9 +285,12 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
   };
 
   const loadReservations = async (courtId = courts[0]?.id) => {
-    if (!courtId) return;
+    if (canManage && !courtId) return;
     try {
-      const data = await api<Reservation[]>(`/reservations?courtId=${courtId}&date=${todayIso}`);
+      const path = canManage
+        ? `/reservations?courtId=${courtId}&date=${todayIso}`
+        : '/reservations/mine';
+      const data = await api<Reservation[]>(path);
       setReservations(data);
     } catch {
       setReservations([]);
@@ -277,7 +324,7 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
   return (
     <View style={styles.appShell}>
       {tab === 'home' && <Dashboard session={session} courts={courts} reservations={reservations} openCourt={openCourt} />}
-      {tab === 'reservations' && <ReservationsScreen reservations={reservations} canManage={canManage} refresh={loadReservations} />}
+      {tab === 'reservations' && <ReservationsScreen reservations={reservations} courts={courts} canManage={canManage} refreshParent={loadReservations} />}
       {tab === 'courts' && <CourtsScreen courts={courts} openCourt={openCourt} />}
       {tab === 'admin' && <AdminCourtsScreen courts={courts} refresh={loadCourts} />}
       {tab === 'profile' && <ProfileScreen session={session} onLogout={onLogout} />}
@@ -357,22 +404,56 @@ function CourtsScreen({ courts, openCourt }: { courts: Court[]; openCourt: (cour
 
 function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Court; session: AuthResponse; onBack: () => void; onReserved: (draft: ReservationDraft) => void }) {
   const [dateIndex, setDateIndex] = useState(0);
-  const [time, setTime] = useState('19:00');
+  const [time, setTime] = useState('');
+  const [slots, setSlots] = useState<CalendarSlot[]>([]);
+  const [loadingSlots, setLoadingSlots] = useState(true);
   const [busy, setBusy] = useState(false);
   const [guestName, setGuestName] = useState('');
   const [guestPhone, setGuestPhone] = useState('');
   const canUseGuest = session.role === 'ADMIN' || session.role === 'PERSONAL';
 
   useEffect(() => {
-    const unsubscribe = subscribeAvailability(court.id, dateOptions[dateIndex].iso, () => undefined);
+    let active = true;
+    const selectedDate = dateOptions[dateIndex].iso;
+    const loadSlots = async () => {
+      try {
+        setLoadingSlots(true);
+        const calendar = await api<CalendarSlot[]>(`/schedules/calendar?courtId=${court.id}&date=${selectedDate}`);
+        if (!active) return;
+        setSlots(calendar);
+        setTime((current) => calendar.some((slot) => slot.startTime === current && slot.status === 'DISPONIBLE')
+          ? current
+          : calendar.find((slot) => slot.status === 'DISPONIBLE')?.startTime ?? '');
+      } catch (error) {
+        if (active) {
+          setSlots([]);
+          setTime('');
+          Alert.alert('Horarios', error instanceof Error ? error.message : 'No se pudieron cargar los horarios.');
+        }
+      } finally {
+        if (active) setLoadingSlots(false);
+      }
+    };
+    loadSlots();
+    const unsubscribe = subscribeAvailability(court.id, selectedDate, loadSlots);
     return () => {
+      active = false;
       unsubscribe();
     };
   }, [court.id, dateIndex]);
 
   const reserve = async () => {
-    const endTime = addHour(time);
+    const selectedSlot = slots.find((slot) => slot.startTime === time && slot.status === 'DISPONIBLE');
     const selectedDate = dateOptions[dateIndex];
+    if (!selectedSlot) {
+      Alert.alert('Horario requerido', 'Selecciona un horario disponible.');
+      return;
+    }
+    const endTime = selectedSlot.endTime;
+    if (canUseGuest && guestPhone.length !== 9) {
+      Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
+      return;
+    }
     if (canUseGuest && !guestName.trim()) {
       Alert.alert('Nombre requerido', 'Ingresa el nombre de la persona que llama para registrar la reserva.');
       return;
@@ -380,7 +461,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
 
     try {
       setBusy(true);
-      await api<Reservation>('/reservations', {
+      const reservation = await api<Reservation>('/reservations', {
         method: 'POST',
         body: {
           courtId: court.id,
@@ -391,7 +472,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
           endTime
         }
       });
-      onReserved({ court, date: selectedDate.iso, displayDate: selectedDate.longLabel, startTime: time, endTime });
+      onReserved({ court, reservation, date: selectedDate.iso, displayDate: selectedDate.longLabel, startTime: time, endTime });
     } catch (error) {
       Alert.alert('No se pudo reservar', error instanceof Error ? error.message : 'Error desconocido');
     } finally {
@@ -425,88 +506,269 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       </ScrollView>
 
       <Text style={styles.sectionTitle}>Horarios disponibles</Text>
-      <View style={styles.timeGrid}>
-        {['18:00', '19:00', '20:00', '21:00', '22:00', '23:00'].map((item) => (
-          <Pressable key={item} style={[styles.slot, item === time && styles.slotActive]} onPress={() => setTime(item)}>
-            <Text style={[styles.slotText, item === time && styles.activeText]}>{to12Hour(item)}</Text>
-          </Pressable>
-        ))}
-      </View>
+      {loadingSlots ? (
+        <ActivityIndicator color="#58c83c" />
+      ) : slots.length === 0 ? (
+        <EmptyCard text="No hay horarios configurados para este día." />
+      ) : (
+        <View style={styles.timeGrid}>
+          {slots.map((slot) => {
+            const available = slot.status === 'DISPONIBLE';
+            return (
+              <Pressable
+                key={`${slot.startTime}-${slot.endTime}`}
+                style={[styles.slot, !available && styles.slotDisabled, slot.startTime === time && styles.slotActive]}
+                onPress={() => setTime(slot.startTime)}
+                disabled={!available}
+              >
+                <Text style={[styles.slotText, !available && styles.slotTextDisabled, slot.startTime === time && styles.activeText]}>
+                  {to12Hour(slot.startTime)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
       {canUseGuest && (
         <View style={styles.adminCard}>
           <Text style={styles.sectionTitle}>Datos de quien llama</Text>
           <AdminInput label="Nombre" placeholder="Ej: Juan Perez" value={guestName} onChangeText={setGuestName} />
-          <AdminInput label="Celular" placeholder="987 654 321" value={guestPhone} onChangeText={setGuestPhone} keyboardType="phone-pad" />
+          <AdminInput label="Celular" placeholder="987 654 321" value={guestPhone} onChangeText={(value) => setGuestPhone(toNineDigits(value))} keyboardType="number-pad" maxLength={9} />
         </View>
       )}
-      <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active} />
+      <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active || !time} />
     </ScrollView>
   );
 }
 
 function SuccessScreen({ draft, onHome, onReservations }: { draft: ReservationDraft; onHome: () => void; onReservations: () => void }) {
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+  const [remaining, setRemaining] = useState(secondsUntil(draft.reservation.paymentExpiresAt));
+
+  useEffect(() => {
+    api<PaymentConfig>('/payment-config').then(setConfig).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setRemaining(secondsUntil(draft.reservation.paymentExpiresAt)), 1000);
+    return () => clearInterval(timer);
+  }, [draft.reservation.paymentExpiresAt]);
+
+  const openWhatsApp = () => {
+    const phone = normalizeWhatsappPhone(config?.whatsappPhoneNumber ?? '987654321');
+    const message = [
+      'Hola.',
+      '',
+      'Acabo de realizar una reserva.',
+      '',
+      `Reserva N: R${String(draft.reservation.id).padStart(6, '0')}`,
+      `Nombre: ${draft.reservation.clientName}`,
+      `Cancha: ${draft.reservation.courtName}`,
+      `Fecha: ${draft.date}`,
+      `Hora: ${to12Hour(draft.startTime)} - ${to12Hour(draft.endTime)}`,
+      `Monto: S/ ${formatMoney(draft.reservation.totalAmount)}`,
+      '',
+      'Adjunto mi comprobante de pago para su validacion.'
+    ].join('\n');
+    Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`);
+  };
+
   return (
-    <View style={styles.successScreen}>
+    <ScrollView contentContainerStyle={styles.successScreen}>
       <View style={styles.successCircle}>
         <Ionicons name="checkmark" size={72} color="#ffffff" />
       </View>
-      <Text style={styles.successTitle}>¡Reserva confirmada!</Text>
-      <Text style={styles.centerCopy}>Tu reserva se ha realizado correctamente.</Text>
+      <Text style={styles.successTitle}>Tu reserva ha sido creada.</Text>
+      <Text style={styles.centerCopy}>Para confirmar tu reserva realiza el pago por Yape y envia el comprobante por WhatsApp.</Text>
+      <View style={styles.countdownCard}>
+        <Text style={styles.fieldLabel}>Tiempo restante para confirmar</Text>
+        <Text style={styles.countdownText}>{formatCountdown(remaining)}</Text>
+      </View>
+      {config && (
+        <View style={styles.paymentBox}>
+          <View style={styles.qrRow}>
+            <View style={styles.qrItem}>
+              <Image source={{ uri: resolveApiUrl(config.yapeQrUrl) }} style={styles.qrImage} />
+              <Text style={styles.greenLink}>Yape</Text>
+            </View>
+          </View>
+          <SummaryRow label="Numero Yape" value={config.yapePhoneNumber} />
+          <SummaryRow label="WhatsApp" value={config.whatsappPhoneNumber} />
+          <SummaryRow label="Titular" value={config.ownerName} />
+        </View>
+      )}
       <View style={styles.summaryCard}>
         <SummaryRow label="Cancha" value={draft.court.name} />
         <SummaryRow label="Fecha" value={draft.displayDate} />
         <SummaryRow label="Hora" value={`${to12Hour(draft.startTime)} - ${to12Hour(draft.endTime)}`} />
-        <SummaryRow label="Precio" value={`S/ ${formatMoney(draft.court.hourlyPrice)}`} />
-        <SummaryRow label="Método de pago" value="Yape" />
+        <SummaryRow label="Monto a pagar" value={`S/ ${formatMoney(draft.reservation.totalAmount)}`} />
+        <SummaryRow label="Estado" value={labelPaymentStatus(draft.reservation.paymentStatus)} />
       </View>
+      <Button title="Enviar comprobante por WhatsApp" onPress={openWhatsApp} />
       <Button title="Ver mis reservas" onPress={onReservations} />
       <Pressable onPress={onHome}>
         <Text style={styles.mutedCenter}>Volver al inicio</Text>
       </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
-function ReservationsScreen({ reservations, canManage, refresh }: { reservations: Reservation[]; canManage: boolean; refresh: () => void }) {
-  const updateStatus = async (reservationId: number, status: string) => {
-    await api<Reservation>(`/reservations/${reservationId}/status?status=${status}`, { method: 'PATCH' });
-    await refresh();
+function ReservationsScreen({
+  reservations,
+  courts,
+  canManage,
+  refreshParent
+}: {
+  reservations: Reservation[];
+  courts: Court[];
+  canManage: boolean;
+  refreshParent: () => void;
+}) {
+  const [items, setItems] = useState<Reservation[]>(reservations);
+  const [courtIndex, setCourtIndex] = useState(0);
+  const [dateIndex, setDateIndex] = useState(0);
+  const [loading, setLoading] = useState(false);
+
+  const loadManagedReservations = async () => {
+    const court = courts[courtIndex];
+    const date = managementDateOptions[dateIndex];
+    if (!canManage || !court || !date) return;
+    try {
+      setLoading(true);
+      const data = await api<Reservation[]>(`/reservations?courtId=${court.id}&date=${date.iso}`);
+      setItems(data);
+    } catch (error) {
+      setItems([]);
+      Alert.alert('Reservas', error instanceof Error ? error.message : 'No se pudieron cargar las reservas.');
+    } finally {
+      setLoading(false);
+    }
   };
+
+  useEffect(() => {
+    if (canManage) {
+      loadManagedReservations();
+    } else {
+      setItems(reservations);
+    }
+  }, [canManage, courtIndex, dateIndex, courts, reservations]);
+
+  const runAction = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+      await loadManagedReservations();
+      await refreshParent();
+    } catch (error) {
+      Alert.alert('Reserva', error instanceof Error ? error.message : 'No se pudo actualizar la reserva.');
+    }
+  };
+
+  const updateStatus = (reservationId: number, status: string) => runAction(() =>
+    api<Reservation>(`/reservations/${reservationId}/status?status=${status}`, { method: 'PATCH' })
+  );
+  const confirmPayment = (reservationId: number) => runAction(() =>
+    api<Reservation>(`/reservations/${reservationId}/payment/confirm?method=Yape`, { method: 'PATCH' })
+  );
+  const markLocalPayment = (reservationId: number) => runAction(() =>
+    api<Reservation>(`/reservations/${reservationId}/payment/local`, { method: 'PATCH' })
+  );
+  const rejectPayment = (reservationId: number) => runAction(() =>
+    api<Reservation>(`/reservations/${reservationId}/payment/reject?reason=${encodeURIComponent('Pago rechazado por administracion')}`, { method: 'PATCH' })
+  );
 
   return (
     <View style={styles.pageFixed}>
       <View style={styles.navTitle}>
-        <Text style={styles.navText}>Mis reservas</Text>
+        <Text style={styles.navText}>{canManage ? 'Gestión de reservas' : 'Mis reservas'}</Text>
         <Ionicons name="calendar-outline" size={24} color="#ffffff" />
       </View>
-      <FlatList
-        data={reservations}
-        keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={styles.courtList}
-        ListEmptyComponent={<EmptyCard text="No hay reservas para esta fecha." />}
-        renderItem={({ item }) => (
-          <View style={styles.reservationFullCard}>
-            <ReservationCard reservation={item} />
-            {canManage && item.status !== 'CANCELADA' && (
-              <View style={styles.adminActions}>
-                <Pressable onPress={() => updateStatus(item.id, 'CONFIRMADA')}><Text style={styles.greenLink}>Confirmar</Text></Pressable>
-                <Pressable onPress={() => updateStatus(item.id, 'CANCELADA')}><Text style={styles.danger}>Cancelar</Text></Pressable>
-              </View>
-            )}
-          </View>
-        )}
-      />
+
+      {canManage ? (
+        <View style={styles.reservationFilters}>
+          <Text style={styles.fieldLabel}>Cancha</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {courts.map((court, index) => (
+              <Pressable
+                key={court.id}
+                style={[styles.managementFilterChip, index === courtIndex && styles.managementFilterChipActive]}
+                onPress={() => setCourtIndex(index)}
+              >
+                <Text style={[styles.managementFilterText, index === courtIndex && styles.activeText]}>{court.name}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          <Text style={styles.fieldLabel}>Fecha</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {managementDateOptions.map((date, index) => (
+              <Pressable
+                key={date.iso}
+                style={[styles.datePill, index === dateIndex && styles.datePillActive]}
+                onPress={() => setDateIndex(index)}
+              >
+                <Text style={[styles.dateDow, index === dateIndex && styles.activeText]}>{date.iso === todayIso ? 'Hoy' : date.dayName}</Text>
+                <Text style={[styles.dateDay, index === dateIndex && styles.activeText]}>{date.day}</Text>
+                <Text style={[styles.dateMonth, index === dateIndex && styles.activeText]}>{date.month}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </View>
+      ) : (
+        <Text style={styles.bodyCopy}>Consulta el horario y el estado actual de todas tus reservas.</Text>
+      )}
+
+      {loading ? (
+        <ActivityIndicator color="#58c83c" style={{ marginTop: 28 }} />
+      ) : (
+        <FlatList
+          data={items}
+          keyExtractor={(item) => String(item.id)}
+          contentContainerStyle={styles.courtList}
+          ListEmptyComponent={<EmptyCard text={canManage ? 'No hay reservas para la cancha y fecha seleccionadas.' : 'Aún no tienes reservas.'} />}
+          renderItem={({ item }) => (
+            <View style={styles.reservationFullCard}>
+              <ReservationCard reservation={item} />
+              {canManage && item.status !== 'CANCELADA' && (
+                <View style={styles.adminActions}>
+                  <Pressable onPress={() => confirmPayment(item.id)}><Text style={styles.greenLink}>Confirmar pago</Text></Pressable>
+                  <Pressable onPress={() => markLocalPayment(item.id)}><Text style={styles.greenLink}>Pago local</Text></Pressable>
+                  <Pressable onPress={() => rejectPayment(item.id)}><Text style={styles.danger}>Rechazar</Text></Pressable>
+                  <Pressable onPress={() => updateStatus(item.id, 'CANCELADA')}><Text style={styles.danger}>Cancelar</Text></Pressable>
+                </View>
+              )}
+            </View>
+          )}
+        />
+      )}
     </View>
   );
 }
-
 function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () => void }) {
   const [adminCourts, setAdminCourts] = useState<Court[]>(courts);
   const [selected, setSelected] = useState<Court | null>(null);
   const [stats, setStats] = useState<CourtStats | null>(null);
   const [busy, setBusy] = useState(false);
-  const [view, setView] = useState<'list' | 'form' | 'prices' | 'schedule' | 'detail' | 'calendar' | 'blocks' | 'blockForm'>('list');
+  const [uploadingQr, setUploadingQr] = useState(false);
+  const [view, setView] = useState<'list' | 'form' | 'prices' | 'schedule' | 'detail' | 'calendar' | 'blocks' | 'blockForm' | 'payments' | 'users' | 'userForm'>('list');
   const [query, setQuery] = useState('');
+  const [users, setUsers] = useState<AdminUser[]>([]);
+  const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
+  const [userQuery, setUserQuery] = useState('');
+  const [userForm, setUserForm] = useState({ fullName: '', email: '', phone: '', password: '', role: 'CLIENTE' as Role });
+  const [saveConfirmation, setSaveConfirmation] = useState<{
+    courtName: string;
+    scheduleStart: string;
+    dayEnd: string;
+    scheduleEnd: string;
+    dayPrice: string;
+    nightPrice: string;
+  } | null>(null);
+  const [paymentForm, setPaymentForm] = useState({
+    ownerName: '',
+    yapePhoneNumber: '',
+    whatsappPhoneNumber: '',
+    yapeQrUrl: '',
+    paymentTimeoutMinutes: '15'
+  });
   const [form, setForm] = useState({
     name: '',
     code: '',
@@ -521,6 +783,7 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
     weekdayNight: '80',
     weekend: '100',
     scheduleStart: '08:00',
+    dayEnd: '17:00',
     scheduleEnd: '23:00',
     promoName: '2 horas por S/150',
     promoFixedPrice: '150',
@@ -529,6 +792,8 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
 
   useEffect(() => {
     loadAdminCourts();
+    loadPaymentSettings();
+    loadUsers();
   }, []);
 
   const filteredCourts = adminCourts.filter((court) =>
@@ -544,8 +809,154 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
     }
   };
 
+  const loadUsers = async () => {
+    try {
+      setUsers(await api<AdminUser[]>('/admin/users'));
+    } catch {
+      setUsers([]);
+    }
+  };
+
+  const openUserForm = (user?: AdminUser) => {
+    setSelectedUser(user ?? null);
+    setUserForm(user
+      ? { fullName: user.fullName, email: user.email, phone: user.phone ?? '', password: '', role: user.role }
+      : { fullName: '', email: '', phone: '', password: '', role: 'CLIENTE' });
+    setView('userForm');
+  };
+
+  const saveUser = async () => {
+    if (!userForm.fullName.trim() || !userForm.email.trim() || userForm.phone.length !== 9
+        || (!selectedUser && userForm.password.length < 6) || (selectedUser && userForm.password.length > 0 && userForm.password.length < 6)) {
+      Alert.alert('Usuario', selectedUser
+        ? 'Completa nombre, correo y celular de 9 dígitos. La nueva contraseña debe tener al menos 6 caracteres.'
+        : 'Completa nombre, correo, celular de 9 dígitos y contraseña de al menos 6 caracteres.');
+      return;
+    }
+    try {
+      setBusy(true);
+      const body = { ...userForm, password: userForm.password || undefined };
+      await api<AdminUser>(selectedUser ? `/admin/users/${selectedUser.id}` : '/admin/users', {
+        method: selectedUser ? 'PUT' : 'POST',
+        body
+      });
+      await loadUsers();
+      setSelectedUser(null);
+      setView('users');
+      Alert.alert(selectedUser ? 'Usuario actualizado' : 'Usuario creado',
+        selectedUser ? 'Los cambios se guardaron correctamente.' : `${userForm.fullName.trim()} ya puede iniciar sesión.`);
+    } catch (error) {
+      Alert.alert('Usuario', error instanceof Error ? error.message : 'No se pudo crear el usuario.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changeUserRole = async (user: AdminUser) => {
+    const role = user.role === 'CLIENTE' ? 'PERSONAL' : 'CLIENTE';
+    try {
+      await api<AdminUser>(`/admin/users/${user.id}/role?role=${role}`, { method: 'PATCH' });
+      await loadUsers();
+    } catch (error) {
+      Alert.alert('Rol', error instanceof Error ? error.message : 'No se pudo cambiar el rol.');
+    }
+  };
+
+  const toggleUserEnabled = async (user: AdminUser) => {
+    try {
+      await api<AdminUser>(`/admin/users/${user.id}/enabled?enabled=${!user.enabled}`, { method: 'PATCH' });
+      await loadUsers();
+    } catch (error) {
+      Alert.alert('Cuenta', error instanceof Error ? error.message : 'No se pudo cambiar el estado.');
+    }
+  };
+  const loadPaymentSettings = async () => {
+    try {
+      const data = await api<PaymentConfig>('/payment-config');
+      setPaymentForm({
+        ownerName: data.ownerName,
+        yapePhoneNumber: data.yapePhoneNumber,
+        whatsappPhoneNumber: data.whatsappPhoneNumber,
+        yapeQrUrl: data.yapeQrUrl,
+        paymentTimeoutMinutes: String(data.paymentTimeoutMinutes)
+      });
+    } catch {
+      setPaymentForm((current) => current);
+    }
+  };
+
+  const selectAndUploadQr = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permiso requerido', 'Permite el acceso a tus fotos para seleccionar el QR de Yape.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.9
+    });
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    try {
+      setUploadingQr(true);
+      const uploaded = await uploadFile<{ url: string }>('/payment-config/qr', {
+        uri: asset.uri,
+        name: asset.fileName ?? `qr-yape-${Date.now()}.jpg`,
+        type: asset.mimeType ?? 'image/jpeg'
+      });
+      setPaymentForm((current) => ({ ...current, yapeQrUrl: uploaded.url }));
+    } catch (error) {
+      Alert.alert('No se pudo subir el QR', error instanceof Error ? error.message : 'Inténtalo nuevamente.');
+    } finally {
+      setUploadingQr(false);
+    }
+  };
+  const savePaymentSettings = async () => {
+    if (!paymentForm.ownerName.trim()) {
+      Alert.alert('Pagos', 'Completa el nombre del titular.');
+      return;
+    }
+    if (paymentForm.yapePhoneNumber.length !== 9 || paymentForm.whatsappPhoneNumber.length !== 9) {
+      Alert.alert('Celular', 'Los números de Yape y WhatsApp deben tener exactamente 9 dígitos.');
+      return;
+    }
+    try {
+      setBusy(true);
+      const saved = await api<PaymentConfig>('/payment-config', {
+        method: 'PUT',
+        body: {
+          ownerName: paymentForm.ownerName.trim(),
+          yapePhoneNumber: paymentForm.yapePhoneNumber.trim(),
+          whatsappPhoneNumber: paymentForm.whatsappPhoneNumber.trim(),
+          yapeQrUrl: paymentForm.yapeQrUrl.trim() || `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=YAPE-${paymentForm.yapePhoneNumber.trim()}`,
+          paymentTimeoutMinutes: Number(paymentForm.paymentTimeoutMinutes || 15)
+        }
+      });
+      setPaymentForm({
+        ownerName: saved.ownerName,
+        yapePhoneNumber: saved.yapePhoneNumber,
+        whatsappPhoneNumber: saved.whatsappPhoneNumber,
+        yapeQrUrl: saved.yapeQrUrl,
+        paymentTimeoutMinutes: String(saved.paymentTimeoutMinutes)
+      });
+      Alert.alert('Pagos', 'Configuracion guardada correctamente.');
+      setView('list');
+    } catch (error) {
+      Alert.alert('Pagos', error instanceof Error ? error.message : 'No se pudo guardar');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const selectCourt = async (court: Court) => {
     setSelected(court);
+    const weekdayRules = (court.priceRules ?? [])
+      .filter((rule) => rule.dayType === 'WEEKDAY')
+      .sort((left, right) => left.startTime.localeCompare(right.startTime));
     setForm({
       name: court.name,
       code: court.code ?? '',
@@ -556,11 +967,12 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       dimensions: court.dimensions ?? '',
       maxPlayers: String(court.maxPlayers ?? 10),
       status: court.status ?? 'DISPONIBLE',
-      weekdayMorning: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKDAY' && rule.startTime === '08:00')?.hourlyPrice ?? 60),
-      weekdayNight: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKDAY' && rule.startTime === '17:00')?.hourlyPrice ?? 80),
-      weekend: String(court.priceRules?.find((rule) => rule.dayType === 'WEEKEND')?.hourlyPrice ?? 100),
-      scheduleStart: court.schedules?.[0]?.startTime ?? '08:00',
-      scheduleEnd: court.schedules?.[0]?.endTime ?? '23:00',
+      weekdayMorning: String(weekdayRules[0]?.hourlyPrice ?? 60),
+      weekdayNight: String(weekdayRules[1]?.hourlyPrice ?? 80),
+      weekend: String(weekdayRules[0]?.hourlyPrice ?? 60),
+      scheduleStart: court.schedules?.[0]?.startTime ?? weekdayRules[0]?.startTime ?? '08:00',
+      dayEnd: weekdayRules[0]?.endTime ?? '17:00',
+      scheduleEnd: court.schedules?.[0]?.endTime ?? weekdayRules[1]?.endTime ?? '23:00',
       promoName: court.promotions?.[0]?.name ?? '2 horas por S/150',
       promoFixedPrice: String(court.promotions?.[0]?.fixedPrice ?? 150),
       promoRequiredHours: String(court.promotions?.[0]?.requiredHours ?? 2)
@@ -589,6 +1001,7 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       weekdayNight: '80',
       weekend: '100',
       scheduleStart: '08:00',
+      dayEnd: '17:00',
       scheduleEnd: '23:00',
       promoName: '2 horas por S/150',
       promoFixedPrice: '150',
@@ -601,11 +1014,31 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       Alert.alert('Cancha', 'Ingresa el nombre de la cancha.');
       return;
     }
+    const scheduleStart = form.scheduleStart.slice(0, 5);
+    const dayEnd = form.dayEnd.slice(0, 5);
+    const scheduleEnd = form.scheduleEnd.slice(0, 5);
+    const validTime = /^([01]\d|2[0-3]):[0-5]\d$/;
+    if (!validTime.test(scheduleStart) || !validTime.test(dayEnd) || !validTime.test(scheduleEnd)
+        || scheduleStart >= dayEnd || dayEnd >= scheduleEnd) {
+      Alert.alert('Horario', 'La hora final del día debe estar entre la apertura y el cierre.');
+      return;
+    }
+    if (Number(form.weekdayMorning) < 0 || Number(form.weekdayNight) < 0) {
+      Alert.alert('Tarifas', 'Los precios deben ser números válidos mayores o iguales a cero.');
+      return;
+    }
+
+    const universalPriceRules = [
+      { dayType: 'WEEKDAY', startTime: scheduleStart, endTime: dayEnd, hourlyPrice: Number(form.weekdayMorning || 0), active: true },
+      { dayType: 'WEEKDAY', startTime: dayEnd, endTime: scheduleEnd, hourlyPrice: Number(form.weekdayNight || 0), active: true },
+      { dayType: 'WEEKEND', startTime: scheduleStart, endTime: dayEnd, hourlyPrice: Number(form.weekdayMorning || 0), active: true },
+      { dayType: 'WEEKEND', startTime: dayEnd, endTime: scheduleEnd, hourlyPrice: Number(form.weekdayNight || 0), active: true }
+    ];
 
     const schedules = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'].map((dayOfWeek) => ({
       dayOfWeek,
-      startTime: form.scheduleStart,
-      endTime: form.scheduleEnd,
+      startTime: scheduleStart,
+      endTime: scheduleEnd,
       active: true
     }));
 
@@ -620,11 +1053,8 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       maxPlayers: Number(form.maxPlayers || 0),
       status: form.status,
       active: form.status !== 'DESHABILITADA',
-      priceRules: [
-        { dayType: 'WEEKDAY', startTime: '08:00', endTime: '17:00', hourlyPrice: Number(form.weekdayMorning || 0), active: true },
-        { dayType: 'WEEKDAY', startTime: '17:00', endTime: '23:00', hourlyPrice: Number(form.weekdayNight || 0), active: true },
-        { dayType: 'WEEKEND', startTime: '08:00', endTime: '23:00', hourlyPrice: Number(form.weekend || 0), active: true }
-      ],
+      priceRules: universalPriceRules,
+
       schedules,
       promotions: form.promoName.trim()
         ? [{
@@ -646,9 +1076,16 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
       }
       await loadAdminCourts();
       await refresh();
+      setSaveConfirmation({
+        courtName: form.name.trim(),
+        scheduleStart,
+        dayEnd,
+        scheduleEnd,
+        dayPrice: form.weekdayMorning,
+        nightPrice: form.weekdayNight
+      });
       resetForm();
       setView('list');
-      Alert.alert('Cancha', 'Cambios guardados correctamente.');
     } catch (error) {
       Alert.alert('Cancha', error instanceof Error ? error.message : 'No se pudo guardar');
     } finally {
@@ -700,9 +1137,15 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
           </View>
           <AdminInput label="Descripcion" placeholder="Describe tu cancha..." value={form.description} onChangeText={(value) => setForm({ ...form, description: value })} multiline />
         </View>
+
         <View style={styles.adminCard}>
-          <Text style={styles.greenLink}>Precio base</Text>
-          <AdminInput label="Precio por hora *" placeholder="S/ 0.00" value={form.weekdayMorning} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayMorning: value, weekdayNight: value, weekend: value })} />
+          <Text style={styles.greenLink}>Horario de atención</Text>
+          <Text style={styles.bodyCopy}>Define desde qué hora hasta qué hora se puede reservar esta cancha.</Text>
+          <View style={styles.twoCols}>
+            <TimePickerField label="Hora de apertura *" value={form.scheduleStart} onChange={(value) => setForm({ ...form, scheduleStart: value })} />
+            <TimePickerField label="Hora de cierre *" value={form.scheduleEnd} onChange={(value) => setForm({ ...form, scheduleEnd: value })} />
+          </View>
+          <Text style={styles.muted}>Toca cada campo para elegir la hora.</Text>
         </View>
         <Button title="Siguiente" onPress={() => setView('prices')} />
       </ScrollView>
@@ -712,18 +1155,32 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
   if (view === 'prices') {
     return (
       <ScrollView contentContainerStyle={styles.page}>
-        <AdminHeader title="Precios y tarifas" onBack={() => setView('form')} actionIcon="add" onAction={() => undefined} />
-        <SegmentTabs tabs={['Dias de semana', 'Fines de semana', 'Feriados']} active="Dias de semana" />
+        <AdminHeader title="Horario y tarifas" onBack={() => setView('form')} />
+        <View style={styles.infoCard}>
+          <Ionicons name="calendar-outline" size={28} color="#58c83c" />
+          <Text style={styles.bodyCopy}>Estas tarifas se aplican de lunes a domingo.</Text>
+        </View>
         <View style={styles.adminCard}>
-          <Text style={styles.sectionTitle}>Lunes a Viernes</Text>
-          <TariffRow time="08:00 - 17:00" price={form.weekdayMorning} onPrice={(value) => setForm({ ...form, weekdayMorning: value })} />
-          <TariffRow time="17:00 - 23:00" price={form.weekdayNight} onPrice={(value) => setForm({ ...form, weekdayNight: value })} />
+          <Text style={styles.greenLink}>Tarifa de día</Text>
+          <View style={styles.twoCols}>
+            <TimePickerField label="Desde" value={form.scheduleStart} onChange={(value) => setForm({ ...form, scheduleStart: value })} />
+            <TimePickerField label="Hasta" value={form.dayEnd} onChange={(value) => setForm({ ...form, dayEnd: value })} />
+          </View>
+          <AdminInput label="Precio por hora de día *" placeholder="S/ 60.00" value={form.weekdayMorning} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayMorning: value })} />
+        </View>
+        <View style={styles.adminCard}>
+          <Text style={styles.greenLink}>Tarifa de noche</Text>
+          <View style={styles.twoCols}>
+            <TimePickerField label="Desde" value={form.dayEnd} onChange={(value) => setForm({ ...form, dayEnd: value })} />
+            <TimePickerField label="Hasta" value={form.scheduleEnd} onChange={(value) => setForm({ ...form, scheduleEnd: value })} />
+          </View>
+          <AdminInput label="Precio por hora de noche *" placeholder="S/ 80.00" value={form.weekdayNight} keyboardType="numeric" onChangeText={(value) => setForm({ ...form, weekdayNight: value })} />
         </View>
         <View style={styles.infoCard}>
           <Ionicons name="information-circle" size={28} color="#58c83c" />
-          <Text style={styles.bodyCopy}>Los precios especiales tienen prioridad sobre los precios normales.</Text>
+          <Text style={styles.bodyCopy}>La tarifa nocturna comienza exactamente cuando termina la tarifa diurna.</Text>
         </View>
-        <Button title="+ Agregar tarifa" onPress={() => setView('schedule')} />
+        <Button title={busy ? 'Guardando...' : 'Guardar horario y tarifas'} onPress={saveCourt} disabled={busy} />
       </ScrollView>
     );
   }
@@ -737,8 +1194,11 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
           <Text style={styles.bodyCopy}>Define el horario de atencion de la cancha</Text>
         </View>
         <Text style={styles.sectionTitle}>Horario de atencion</Text>
-        <SelectLine label="Hora de apertura" value={to12Hour(form.scheduleStart)} onPress={() => undefined} />
-        <SelectLine label="Hora de cierre" value={to12Hour(form.scheduleEnd)} onPress={() => undefined} />
+        <View style={styles.twoCols}>
+          <TimePickerField label="Hora de apertura" value={form.scheduleStart} onChange={(value) => setForm({ ...form, scheduleStart: value })} />
+          <TimePickerField label="Hora de cierre" value={form.scheduleEnd} onChange={(value) => setForm({ ...form, scheduleEnd: value })} />
+        </View>
+        <Text style={styles.muted}>Toca cada campo para elegir la hora.</Text>
         <Text style={styles.sectionTitle}>Dias de atencion</Text>
         <View style={styles.dayGrid}>
           {['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'].map((day) => <Text key={day} style={styles.dayChip}>{day}</Text>)}
@@ -787,6 +1247,140 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
     );
   }
 
+  if (view === 'users') {
+    const filteredUsers = users.filter((user) =>
+      `${user.fullName} ${user.email} ${user.phone ?? ''} ${user.role}`.toLowerCase().includes(userQuery.toLowerCase())
+    );
+    return (
+      <View style={styles.pageFixed}>
+        <AdminHeader title="Usuarios y clientes" onBack={() => setView('list')} actionIcon="add" onAction={() => openUserForm()} />
+        <Text style={styles.bodyCopy}>Administra clientes y encargados que pueden ingresar al sistema.</Text>
+        <View style={styles.userSearchBox}>
+          <Ionicons name="search" size={20} color="#9aa4ad" />
+          <TextInput style={styles.searchInput} placeholder="Buscar por nombre, correo o celular" placeholderTextColor="#9aa4ad" value={userQuery} onChangeText={setUserQuery} />
+        </View>
+        <FlatList
+          data={filteredUsers}
+          keyExtractor={(item) => String(item.id)}
+          contentContainerStyle={styles.courtList}
+          ListEmptyComponent={<EmptyCard text="No se encontraron usuarios." />}
+          renderItem={({ item }) => (
+            <View style={styles.userManagementCard}>
+              <View style={[styles.userAvatar, !item.enabled && styles.userAvatarDisabled]}>
+                <Ionicons name="person" size={24} color="#ffffff" />
+              </View>
+              <View style={styles.userManagementInfo}>
+                <Text style={styles.courtName}>{item.fullName}</Text>
+                <Text style={styles.courtDesc}>{item.email}</Text>
+                <Text style={styles.courtDesc}>{item.phone || 'Sin celular'}</Text>
+                <View style={styles.userBadges}>
+                  <Text style={[styles.badge, item.role === 'ADMIN' ? styles.badgeWarn : styles.badgeOk]}>{labelRole(item.role)}</Text>
+                  <Text style={[styles.badge, item.enabled ? styles.badgeOk : styles.badgeOff]}>{item.enabled ? 'Activo' : 'Desactivado'}</Text>
+                </View>
+                <View style={styles.userActions}>
+                  <Pressable onPress={() => openUserForm(item)}>
+                    <Text style={styles.greenLink}>Editar</Text>
+                  </Pressable>
+                  {item.role !== 'ADMIN' && (
+                    <>
+                      <Pressable onPress={() => changeUserRole(item)}>
+                        <Text style={styles.greenLink}>{item.role === 'CLIENTE' ? 'Convertir en encargado' : 'Convertir en cliente'}</Text>
+                      </Pressable>
+                      <Pressable onPress={() => toggleUserEnabled(item)}>
+                        <Text style={item.enabled ? styles.danger : styles.greenLink}>{item.enabled ? 'Desactivar' : 'Activar'}</Text>
+                      </Pressable>
+                    </>
+                  )}
+                </View>
+              </View>
+            </View>
+          )}
+        />
+      </View>
+    );
+  }
+
+  if (view === 'userForm') {
+    return (
+      <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled">
+        <AdminHeader title={selectedUser ? 'Editar usuario' : 'Crear usuario'} onBack={() => { setSelectedUser(null); setView('users'); }} />
+        <View style={styles.infoCard}>
+          <Ionicons name="shield-checkmark-outline" size={28} color="#58c83c" />
+          <Text style={styles.bodyCopy}>Los clientes ven sus reservas. Los encargados pueden gestionar reservas y pagos.</Text>
+        </View>
+        <View style={styles.adminCard}>
+          <Text style={styles.greenLink}>Datos de acceso</Text>
+          <AdminInput label="Nombre completo *" placeholder="Ej: María López" value={userForm.fullName} onChangeText={(value) => setUserForm({ ...userForm, fullName: value })} />
+          <AdminInput label="Correo electrónico *" placeholder="correo@ejemplo.com" value={userForm.email} onChangeText={(value) => setUserForm({ ...userForm, email: value })} keyboardType="email-address" autoCapitalize="none" />
+          <AdminInput label="Celular *" placeholder="987654321" value={userForm.phone} onChangeText={(value) => setUserForm({ ...userForm, phone: toNineDigits(value) })} keyboardType="number-pad" maxLength={9} />
+          <AdminInput label={selectedUser ? 'Nueva contraseña (opcional)' : 'Contraseña inicial *'} placeholder={selectedUser ? 'Déjala vacía para conservarla' : 'Mínimo 6 caracteres'} value={userForm.password} onChangeText={(value) => setUserForm({ ...userForm, password: value })} secureTextEntry />
+          {selectedUser?.role !== 'ADMIN' && (
+          <>
+          <Text style={styles.fieldLabel}>Tipo de usuario</Text>
+          <View style={styles.userRoleSelector}>
+            <Pressable style={[styles.userRoleOption, userForm.role === 'CLIENTE' && styles.userRoleOptionActive]} onPress={() => setUserForm({ ...userForm, role: 'CLIENTE' })}>
+              <Ionicons name="person-outline" size={23} color={userForm.role === 'CLIENTE' ? '#58c83c' : '#9aa4ad'} />
+              <Text style={[styles.managementFilterText, userForm.role === 'CLIENTE' && styles.greenLink]}>Cliente</Text>
+              <Text style={styles.muted}>Reserva y consulta sus estados</Text>
+            </Pressable>
+            <Pressable style={[styles.userRoleOption, userForm.role === 'PERSONAL' && styles.userRoleOptionActive]} onPress={() => setUserForm({ ...userForm, role: 'PERSONAL' })}>
+              <Ionicons name="people-outline" size={23} color={userForm.role === 'PERSONAL' ? '#58c83c' : '#9aa4ad'} />
+              <Text style={[styles.managementFilterText, userForm.role === 'PERSONAL' && styles.greenLink]}>Encargado</Text>
+              <Text style={styles.muted}>Gestiona reservas y pagos</Text>
+            </Pressable>
+          </View>
+          </>
+          )}
+        </View>
+        <Button title={busy ? 'Guardando...' : selectedUser ? 'Guardar cambios' : 'Crear usuario'} onPress={saveUser} disabled={busy} />
+      </ScrollView>
+    );
+  }
+  if (view === 'payments') {
+    return (
+      <ScrollView contentContainerStyle={styles.page}>
+        <AdminHeader title="Pagos con Yape" onBack={() => setView('list')} />
+        <View style={styles.infoCard}>
+          <Ionicons name="phone-portrait-outline" size={30} color="#58c83c" />
+          <Text style={styles.bodyCopy}>Estos datos se muestran al cliente despues de crear su reserva.</Text>
+        </View>
+        <View style={styles.adminCard}>
+          <Text style={styles.greenLink}>Datos de cobro</Text>
+          <AdminInput label="Nombre del titular" placeholder="Ej: Juan Perez" value={paymentForm.ownerName} onChangeText={(value) => setPaymentForm({ ...paymentForm, ownerName: value })} />
+          <AdminInput label="Numero Yape" placeholder="987654321" value={paymentForm.yapePhoneNumber} onChangeText={(value) => setPaymentForm({ ...paymentForm, yapePhoneNumber: toNineDigits(value) })} keyboardType="number-pad" maxLength={9} />
+          <AdminInput label="Numero WhatsApp" placeholder="987654321" value={paymentForm.whatsappPhoneNumber} onChangeText={(value) => setPaymentForm({ ...paymentForm, whatsappPhoneNumber: toNineDigits(value) })} keyboardType="number-pad" maxLength={9} />
+          <Text style={styles.fieldLabel}>QR de Yape</Text>
+          <Pressable style={styles.qrUploadArea} onPress={selectAndUploadQr} disabled={uploadingQr}>
+            {paymentForm.yapeQrUrl ? (
+              <Image source={{ uri: resolveApiUrl(paymentForm.yapeQrUrl) }} style={styles.qrUploadPreview} />
+            ) : (
+              <View style={styles.qrUploadPlaceholder}>
+                <Ionicons name="image-outline" size={38} color="#58c83c" />
+              </View>
+            )}
+            <View style={styles.qrUploadInfo}>
+              <Text style={styles.courtName}>{uploadingQr ? 'Subiendo imagen...' : paymentForm.yapeQrUrl ? 'Cambiar QR de Yape' : 'Subir QR de Yape'}</Text>
+              <Text style={styles.bodyCopy}>Selecciona una imagen cuadrada desde tu galería.</Text>
+            </View>
+            {uploadingQr ? <ActivityIndicator color="#58c83c" /> : <Ionicons name="chevron-forward" size={22} color="#ffffff" />}
+          </Pressable>
+          <AdminInput label="Tiempo maximo de espera en minutos" placeholder="15" value={paymentForm.paymentTimeoutMinutes} onChangeText={(value) => setPaymentForm({ ...paymentForm, paymentTimeoutMinutes: value })} keyboardType="numeric" />
+        </View>
+        {!!paymentForm.yapeQrUrl.trim() && (
+          <View style={styles.paymentPreview}>
+            <Image source={{ uri: resolveApiUrl(paymentForm.yapeQrUrl.trim()) }} style={styles.qrImage} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.courtName}>Vista previa Yape</Text>
+              <Text style={styles.bodyCopy}>{paymentForm.yapePhoneNumber || 'Numero Yape'}</Text>
+              <Text style={styles.bodyCopy}>{paymentForm.ownerName || 'Titular'}</Text>
+            </View>
+          </View>
+        )}
+        <Button title={busy ? 'Guardando...' : 'Guardar configuracion'} onPress={savePaymentSettings} disabled={busy} />
+      </ScrollView>
+    );
+  }
+
   return (
     <View style={styles.pageFixed}>
       <View style={styles.adminTop}>
@@ -797,6 +1391,22 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
         </Pressable>
       </View>
       <Text style={styles.bodyCopy}>Gestiona todas las canchas de tu sede</Text>
+      <Pressable style={styles.infoCard} onPress={() => { loadUsers(); setView('users'); }}>
+        <Ionicons name="people-outline" size={28} color="#58c83c" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.courtName}>Usuarios y clientes</Text>
+          <Text style={styles.bodyCopy}>Crea clientes, encargados y administra sus accesos</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color="#ffffff" />
+      </Pressable>
+      <Pressable style={styles.infoCard} onPress={() => setView('payments')}>
+        <Ionicons name="logo-whatsapp" size={28} color="#58c83c" />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.courtName}>Configuracion de pagos</Text>
+          <Text style={styles.bodyCopy}>Numero Yape, WhatsApp y QR de cobro</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={22} color="#ffffff" />
+      </Pressable>
       <View style={styles.searchRow}>
         <View style={styles.searchBox}>
           <Ionicons name="search" size={20} color="#9aa4ad" />
@@ -825,7 +1435,78 @@ function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () =
           </Pressable>
         )}
       />
+      <SaveConfirmationModal summary={saveConfirmation} onClose={() => setSaveConfirmation(null)} />
     </View>
+  );
+}
+
+function SaveConfirmationModal({
+  summary,
+  onClose
+}: {
+  summary: {
+    courtName: string;
+    scheduleStart: string;
+    dayEnd: string;
+    scheduleEnd: string;
+    dayPrice: string;
+    nightPrice: string;
+  } | null;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={Boolean(summary)} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.saveConfirmationModal}>
+          <View style={styles.saveSuccessIcon}>
+            <Ionicons name="checkmark" size={36} color="#ffffff" />
+          </View>
+          <Text style={styles.saveConfirmationEyebrow}>CONFIGURACIÓN ACTUALIZADA</Text>
+          <Text style={styles.saveConfirmationTitle}>¡Cambios guardados!</Text>
+          <Text style={styles.saveConfirmationCopy}>
+            La cancha {summary?.courtName} ya está lista con este horario y tarifas.
+          </Text>
+
+          <View style={styles.saveSummaryCard}>
+            <View style={styles.saveSummaryRow}>
+              <Ionicons name="calendar-outline" size={21} color="#58c83c" />
+              <View style={styles.saveSummaryText}>
+                <Text style={styles.saveSummaryLabel}>Días de atención</Text>
+                <Text style={styles.saveSummaryValue}>Lunes a domingo</Text>
+              </View>
+            </View>
+            <View style={styles.saveSummaryDivider} />
+            <View style={styles.saveSummaryRow}>
+              <Ionicons name="time-outline" size={21} color="#58c83c" />
+              <View style={styles.saveSummaryText}>
+                <Text style={styles.saveSummaryLabel}>Horario de atención</Text>
+                <Text style={styles.saveSummaryValue}>{summary?.scheduleStart} - {summary?.scheduleEnd}</Text>
+              </View>
+            </View>
+            <View style={styles.saveSummaryDivider} />
+            <View style={styles.saveSummaryRow}>
+              <Ionicons name="sunny-outline" size={21} color="#f3c94f" />
+              <View style={styles.saveSummaryText}>
+                <Text style={styles.saveSummaryLabel}>Tarifa de día · {summary?.scheduleStart} - {summary?.dayEnd}</Text>
+                <Text style={styles.saveSummaryValue}>S/ {summary?.dayPrice} por hora</Text>
+              </View>
+            </View>
+            <View style={styles.saveSummaryDivider} />
+            <View style={styles.saveSummaryRow}>
+              <Ionicons name="moon-outline" size={21} color="#8faaff" />
+              <View style={styles.saveSummaryText}>
+                <Text style={styles.saveSummaryLabel}>Tarifa de noche · {summary?.dayEnd} - {summary?.scheduleEnd}</Text>
+                <Text style={styles.saveSummaryValue}>S/ {summary?.nightPrice} por hora</Text>
+              </View>
+            </View>
+          </View>
+
+          <Pressable style={styles.saveConfirmationButton} onPress={onClose}>
+            <Text style={styles.saveConfirmationButtonText}>Entendido</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -865,6 +1546,46 @@ function SegmentTabs({ tabs, active }: { tabs: string[]; active: string }) {
   );
 }
 
+function TimePickerField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const [visible, setVisible] = useState(false);
+  const hours = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
+  return (
+    <View style={styles.adminInputWrap}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Pressable style={styles.timePickerButton} onPress={() => setVisible(true)}>
+        <Text style={styles.selectValue}>{to12Hour(value)}</Text>
+        <Ionicons name="time-outline" size={20} color="#58c83c" />
+      </Pressable>
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={() => setVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setVisible(false)} />
+          <View style={styles.timePickerModal}>
+            <View style={styles.timePickerHeader}>
+              <Text style={styles.sectionTitle}>{label}</Text>
+              <Pressable onPress={() => setVisible(false)}>
+                <Ionicons name="close" size={25} color="#ffffff" />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.hourGrid}>
+              {hours.map((hour) => (
+                <Pressable
+                  key={hour}
+                  style={[styles.hourOption, hour === value && styles.hourOptionActive]}
+                  onPress={() => {
+                    onChange(hour);
+                    setVisible(false);
+                  }}
+                >
+                  <Text style={[styles.hourOptionText, hour === value && styles.activeText]}>{to12Hour(hour)}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
 function SelectLine({ label, value, onPress, icon = 'chevron-down' }: { label: string; value: string; onPress: () => void; icon?: keyof typeof Ionicons.glyphMap }) {
   return (
     <Pressable style={styles.selectLine} onPress={onPress}>
@@ -896,6 +1617,8 @@ function TariffRow({ time, price, onPrice }: { time: string; price: string; onPr
 }
 
 function AdminCourtDetail({ court, onBack, onEdit, onCalendar }: { court: Court; onBack: () => void; onEdit: () => void; onCalendar: () => void }) {
+  const schedule = court.schedules?.find((item) => item.active);
+  const scheduleLabel = schedule ? to12Hour(schedule.startTime) + ' - ' + to12Hour(schedule.endTime) : 'Sin horario';
   return (
     <ScrollView contentContainerStyle={styles.detailContent}>
       <ImageBackground source={{ uri: court.mainImageUrl || courtImages[court.id % courtImages.length] }} style={styles.adminDetailHero}>
@@ -914,7 +1637,7 @@ function AdminCourtDetail({ court, onBack, onEdit, onCalendar }: { court: Court;
         <View style={styles.featureGrid}>
           <Feature icon="people-outline" value={String(court.maxPlayers || 14)} label="Jugadores" />
           <Feature icon="resize-outline" value={court.dimensions ?? '50m x 30m'} label="Dimensiones" />
-          <Feature icon="time-outline" value="08:00 - 23:00" label="Horario" />
+          <Feature icon="time-outline" value={scheduleLabel} label="Horario" />
         </View>
         <Text style={styles.greenLink}>Precio desde</Text>
         <Text style={styles.detailPrice}>S/ {formatMoney(court.hourlyPrice)} <Text style={styles.priceUnit}>/ hora</Text></Text>
@@ -1028,14 +1751,31 @@ function ProfileScreen({ session, onLogout }: { session: AuthResponse; onLogout:
 }
 
 function Field(props: React.ComponentProps<typeof TextInput> & { icon: keyof typeof Ionicons.glyphMap; label: string }) {
-  const { icon, label, style, ...rest } = props;
+  const { icon, label, style, secureTextEntry, ...rest } = props;
+  const [passwordVisible, setPasswordVisible] = useState(false);
   return (
     <View style={styles.field}>
       <Ionicons name={icon} size={19} color="#9aa4ad" />
       <View style={styles.fieldBody}>
         <Text style={styles.fieldLabel}>{label}</Text>
-        <TextInput style={[styles.fieldInput, style]} placeholderTextColor="#77808a" {...rest} />
+        <TextInput
+          style={[styles.fieldInput, style]}
+          placeholderTextColor="#77808a"
+          secureTextEntry={secureTextEntry && !passwordVisible}
+          {...rest}
+        />
       </View>
+      {secureTextEntry && (
+        <Pressable
+          style={styles.passwordToggle}
+          onPress={() => setPasswordVisible((visible) => !visible)}
+          accessibilityRole="button"
+          accessibilityLabel={passwordVisible ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+          hitSlop={8}
+        >
+          <Ionicons name={passwordVisible ? 'eye-off-outline' : 'eye-outline'} size={21} color="#9aa4ad" />
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -1044,15 +1784,6 @@ function Button({ title, onPress, disabled, variant = 'solid' }: { title: string
   return (
     <Pressable style={[styles.button, variant === 'outline' && styles.outlineButton, disabled && styles.buttonDisabled]} onPress={onPress} disabled={disabled}>
       <Text style={[styles.buttonText, variant === 'outline' && styles.outlineText]}>{title}</Text>
-    </Pressable>
-  );
-}
-
-function SocialButton({ name, text }: { name: keyof typeof Ionicons.glyphMap; text: string }) {
-  return (
-    <Pressable style={styles.socialButton}>
-      <Ionicons name={name} size={22} color={text === 'Facebook' ? '#1877f2' : '#ffffff'} />
-      <Text style={styles.socialText}>{text}</Text>
     </Pressable>
   );
 }
@@ -1066,7 +1797,9 @@ function ReservationCard({ reservation }: { reservation: Reservation }) {
         <Text style={styles.reservationCourt}>{reservation.courtName}</Text>
         <Text style={styles.bodyCopy}>{reservation.clientName || 'Partido con amigos'}</Text>
       </View>
-      <Text style={[styles.statusPill, reservation.status === 'CONFIRMADA' ? styles.statusOk : styles.statusPending]}>{labelStatus(reservation.status)}</Text>
+      <Text style={[styles.statusPill, reservation.status === 'CONFIRMADA' ? styles.statusOk : styles.statusPending]}>
+        {reservation.status === 'PENDIENTE' ? labelPaymentStatus(reservation.paymentStatus) : labelStatus(reservation.status)}
+      </Text>
     </View>
   );
 }
@@ -1127,6 +1860,17 @@ function labelStatus(status: Reservation['status']) {
   return status === 'CONFIRMADA' ? 'Confirmada' : status === 'PENDIENTE' ? 'Pendiente' : status === 'CANCELADA' ? 'Cancelada' : 'Finalizada';
 }
 
+function labelPaymentStatus(status: Reservation['paymentStatus']) {
+  const labels: Record<Reservation['paymentStatus'], string> = {
+    PENDIENTE_PAGO: 'Pendiente de pago',
+    EN_REVISION: 'En revision',
+    PAGO_EN_LOCAL: 'Pago en local',
+    RECHAZADO: 'Pago rechazado',
+    PAGADO: 'Pagado'
+  };
+  return labels[status] ?? 'Pendiente de pago';
+}
+
 function labelCourtType(type: Court['type']) {
   const labels: Record<Court['type'], string> = {
     GRASS_SINTETICO: 'Grass sintetico',
@@ -1170,26 +1914,58 @@ function to12Hour(time: string) {
   return `${displayHour}:${minutes} ${numericHour >= 12 ? 'PM' : 'AM'}`;
 }
 
+function secondsUntil(value?: string) {
+  if (!value) return 0;
+  return Math.max(0, Math.floor((new Date(value).getTime() - Date.now()) / 1000));
+}
+
+function formatCountdown(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
+function toNineDigits(value: string) {
+  return value.replace(/\D/g, '').slice(0, 9);
+}
+
+function normalizeWhatsappPhone(value: string) {
+  const digits = value.replace(/\D/g, '');
+  return digits.length === 9 ? `51${digits}` : digits;
+}
+
 function relativeDate(date: string) {
   return date === todayIso ? 'Hoy' : date;
 }
 
-const dateOptions = Array.from({ length: 5 }, (_, index) => {
-  const date = new Date(today);
-  date.setDate(today.getDate() + index);
+const dateOptions = Array.from({ length: 7 }, (_, index) => {
+  const date = new Date(`${todayIso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + index);
   const iso = date.toISOString().slice(0, 10);
   const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
   const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
   const longDays = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
   return {
     iso,
-    dayName: dayNames[date.getDay()],
-    day: String(date.getDate()),
-    month: monthNames[date.getMonth()],
-    longLabel: `${longDays[date.getDay()]}, ${date.getDate()} de ${monthNames[date.getMonth()]}`
+    dayName: dayNames[date.getUTCDay()],
+    day: String(date.getUTCDate()),
+    month: monthNames[date.getUTCMonth()],
+    longLabel: `${longDays[date.getUTCDay()]}, ${date.getUTCDate()} de ${monthNames[date.getUTCMonth()]}`
   };
 });
 
+const managementDateOptions = Array.from({ length: 31 }, (_, index) => {
+  const date = new Date(`${todayIso}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + index);
+  const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+  const monthNames = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+  return {
+    iso: date.toISOString().slice(0, 10),
+    dayName: dayNames[date.getUTCDay()],
+    day: String(date.getUTCDate()),
+    month: monthNames[date.getUTCMonth()]
+  };
+});
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: '#020b0d' },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, backgroundColor: '#020b0d' },
@@ -1201,8 +1977,6 @@ const styles = StyleSheet.create({
   greenText: { color: '#58c83c' },
   welcomeCopy: { color: '#ffffff', fontSize: 16, lineHeight: 23, textAlign: 'center', marginTop: 8, maxWidth: 230 },
   welcomeActions: { width: '100%', gap: 12, marginTop: 76, marginBottom: 28 },
-  guestButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  guestText: { color: '#ffffff', fontWeight: '700' },
   authScreen: { flexGrow: 1, padding: 24, gap: 12, backgroundColor: '#020b0d' },
   backButton: { width: 44, height: 44, justifyContent: 'center', marginBottom: 12 },
   authTitle: { color: '#ffffff', fontSize: 28, fontWeight: '900', marginTop: 8 },
@@ -1211,15 +1985,12 @@ const styles = StyleSheet.create({
   fieldBody: { flex: 1 },
   fieldLabel: { color: '#c5cdd3', fontSize: 11, fontWeight: '700' },
   fieldInput: { color: '#ffffff', fontSize: 14, paddingVertical: 3 },
+  passwordToggle: { minWidth: 36, minHeight: 42, alignItems: 'center', justifyContent: 'center' },
   loginOptions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginVertical: 4 },
   remember: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   muted: { color: '#a7b0b6', fontSize: 13 },
   greenLink: { color: '#58c83c', fontWeight: '800' },
   mutedCenter: { color: '#c8d0d5', textAlign: 'center', marginTop: 10 },
-  separator: { color: '#8d989f', textAlign: 'center', marginVertical: 10 },
-  socialRow: { flexDirection: 'row', gap: 10 },
-  socialButton: { flex: 1, minHeight: 52, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#071315', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 },
-  socialText: { color: '#ffffff', fontWeight: '800' },
   forgotIcon: { width: 90, height: 90, borderRadius: 45, borderWidth: 1, borderColor: '#58c83c', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginVertical: 26 },
   centerCopy: { color: '#d9e0e3', fontSize: 15, lineHeight: 22, textAlign: 'center', marginBottom: 18 },
   button: { minHeight: 54, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: '#36b833', marginTop: 6 },
@@ -1273,6 +2044,10 @@ const styles = StyleSheet.create({
   detailPrice: { color: '#ffffff', fontSize: 22, fontWeight: '900', paddingHorizontal: 20, marginTop: 18 },
   priceUnit: { fontSize: 14, color: '#d7dfe3' },
   dateRow: { paddingHorizontal: 20 },
+  reservationFilters: { gap: 9, marginTop: 8, marginBottom: 8 },
+  managementFilterChip: { minWidth: 104, minHeight: 44, borderRadius: 9, borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, marginRight: 9 },
+  managementFilterChipActive: { borderColor: '#58c83c', backgroundColor: '#102916' },
+  managementFilterText: { color: '#aeb8bf', fontSize: 13, fontWeight: '700' },
   datePill: { width: 62, height: 78, borderRadius: 8, borderWidth: 1, borderColor: '#193136', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
   datePillActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   dateDow: { color: '#c2cbd1', fontSize: 13, fontWeight: '800' },
@@ -1281,11 +2056,32 @@ const styles = StyleSheet.create({
   activeText: { color: '#ffffff' },
   timeGrid: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   slot: { width: '30.5%', minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1a3035', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  slotDisabled: { opacity: 0.45, backgroundColor: '#182124' },
+  slotTextDisabled: { color: '#7f898f' },
   slotActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   slotText: { color: '#ffffff', fontWeight: '900' },
-  successScreen: { flex: 1, padding: 24, justifyContent: 'center', backgroundColor: '#020b0d' },
+  successScreen: { flexGrow: 1, padding: 24, justifyContent: 'center', backgroundColor: '#020b0d' },
   successCircle: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#58c83c', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 20 },
   successTitle: { color: '#ffffff', fontSize: 26, fontWeight: '900', textAlign: 'center', marginBottom: 8 },
+  countdownCard: { borderWidth: 1, borderColor: '#8a6d16', backgroundColor: '#081719', borderRadius: 8, padding: 16, alignItems: 'center', marginBottom: 14 },
+  countdownText: { color: '#d7ff45', fontSize: 32, fontWeight: '900', marginTop: 4 },
+  paymentBox: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 16, marginBottom: 14 },
+  qrRow: { flexDirection: 'row', gap: 12, marginBottom: 12 },
+  qrItem: { flex: 1, alignItems: 'center', gap: 8 },
+  qrImage: { width: 128, height: 128, borderRadius: 8, backgroundColor: '#ffffff' },
+  userManagementCard: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 12, padding: 14, flexDirection: 'row', gap: 13, marginBottom: 10 },
+  userAvatar: { width: 48, height: 48, borderRadius: 24, backgroundColor: '#35c62f', alignItems: 'center', justifyContent: 'center' },
+  userAvatarDisabled: { backgroundColor: '#536067' },
+  userManagementInfo: { flex: 1, gap: 3 },
+  userBadges: { flexDirection: 'row', gap: 7, marginTop: 7 },
+  userActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', gap: 14, marginTop: 11, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#173035' },
+  userRoleSelector: { flexDirection: 'row', gap: 10, marginTop: 7 },
+  userRoleOption: { flex: 1, minHeight: 112, borderWidth: 1, borderColor: '#244047', borderRadius: 10, padding: 12, justifyContent: 'center', gap: 6 },
+  userRoleOptionActive: { borderColor: '#58c83c', backgroundColor: '#102916' },  paymentPreview: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 14, marginTop: 14, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 14 },
+  qrUploadArea: { minHeight: 104, borderWidth: 1, borderStyle: 'dashed', borderColor: '#31535a', backgroundColor: '#061113', borderRadius: 12, padding: 12, marginTop: 7, marginBottom: 12, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  qrUploadPreview: { width: 78, height: 78, borderRadius: 9, backgroundColor: '#ffffff' },
+  qrUploadPlaceholder: { width: 78, height: 78, borderRadius: 9, borderWidth: 1, borderColor: '#244047', backgroundColor: '#0a1b1e', alignItems: 'center', justifyContent: 'center' },
+  qrUploadInfo: { flex: 1 },
   summaryCard: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 16, marginVertical: 16 },
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 18, paddingVertical: 8 },
   summaryLabel: { color: '#aab3b9', flex: 1 },
@@ -1309,6 +2105,7 @@ const styles = StyleSheet.create({
   headerSpacer: { width: 36, height: 36 },
   searchRow: { flexDirection: 'row', gap: 10, marginTop: 16, marginBottom: 8 },
   searchBox: { flex: 1, minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  userSearchBox: { width: '100%', height: 48, maxHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 6 },
   searchInput: { flex: 1, color: '#ffffff' },
   filterButton: { width: 48, borderRadius: 8, backgroundColor: '#081719', borderWidth: 1, borderColor: '#1d363b', alignItems: 'center', justifyContent: 'center' },
   managementRow: { minHeight: 92, borderRadius: 8, borderWidth: 1, borderColor: '#182f33', backgroundColor: '#081719', padding: 9, marginBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 12 },
@@ -1321,7 +2118,27 @@ const styles = StyleSheet.create({
   segmentTab: { flex: 1, color: '#c8d0d5', textAlign: 'center', fontWeight: '800', paddingVertical: 14, borderRadius: 7, fontSize: 12 },
   segmentTabActive: { color: '#58c83c', backgroundColor: '#102916', borderBottomWidth: 2, borderBottomColor: '#58c83c' },
   selectLine: { minHeight: 58, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', paddingHorizontal: 12, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  selectValue: { color: '#ffffff', fontSize: 15, fontWeight: '700', marginTop: 4 },
+  timePickerButton: { minHeight: 54, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.72)', alignItems: 'center', justifyContent: 'center', padding: 22 },
+  timePickerModal: { width: '100%', maxHeight: '76%', borderRadius: 12, borderWidth: 1, borderColor: '#244047', backgroundColor: '#071315', padding: 18 },
+  saveConfirmationModal: { width: '100%', maxWidth: 390, borderRadius: 22, borderWidth: 1, borderColor: '#244047', backgroundColor: '#071315', padding: 22, alignItems: 'center' },
+  saveSuccessIcon: { width: 68, height: 68, borderRadius: 34, alignItems: 'center', justifyContent: 'center', backgroundColor: '#35c62f', marginTop: -4, marginBottom: 14, shadowColor: '#35c62f', shadowOpacity: 0.32, shadowRadius: 12, elevation: 7 },
+  saveConfirmationEyebrow: { color: '#58c83c', fontSize: 11, fontWeight: '800', letterSpacing: 1.1, marginBottom: 7 },
+  saveConfirmationTitle: { color: '#ffffff', fontSize: 24, fontWeight: '800', textAlign: 'center' },
+  saveConfirmationCopy: { color: '#aeb8bf', fontSize: 14, lineHeight: 20, textAlign: 'center', marginTop: 7, marginBottom: 18 },
+  saveSummaryCard: { width: '100%', borderRadius: 14, borderWidth: 1, borderColor: '#1d353a', backgroundColor: '#0a1b1e', paddingHorizontal: 15, paddingVertical: 4 },
+  saveSummaryRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
+  saveSummaryText: { flex: 1, marginLeft: 12 },
+  saveSummaryLabel: { color: '#819097', fontSize: 12, marginBottom: 3 },
+  saveSummaryValue: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
+  saveSummaryDivider: { height: 1, backgroundColor: '#183034', marginLeft: 33 },
+  saveConfirmationButton: { width: '100%', minHeight: 50, borderRadius: 10, alignItems: 'center', justifyContent: 'center', backgroundColor: '#35c62f', marginTop: 18 },
+  saveConfirmationButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '800' },
+  timePickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  hourGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 8 },
+  hourOption: { width: '30.5%', minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0b1d20' },
+  hourOptionActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
+  hourOptionText: { color: '#ffffff', fontWeight: '800' },  selectValue: { color: '#ffffff', fontSize: 15, fontWeight: '700', marginTop: 4 },
   tariffRow: { minHeight: 82, borderTopWidth: 1, borderTopColor: '#1d363b', flexDirection: 'row', alignItems: 'center', gap: 12 },
   tariffTime: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
   iconBox: { width: 38, height: 38, borderRadius: 8, borderWidth: 1, borderColor: '#263a3f', backgroundColor: '#061214', alignItems: 'center', justifyContent: 'center' },
