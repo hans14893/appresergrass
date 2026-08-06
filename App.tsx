@@ -346,8 +346,8 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
       {mode === 'register' && (
         <>
-          <Field icon="person" label="Nombres" placeholder="Hans Martín" value={names} onChangeText={(value) => updateAuthField('names', setNames, value)} error={fieldErrors.names} />
-          <Field icon="people-outline" label="Apellidos" placeholder="Matencios Parian" value={lastNames} onChangeText={(value) => updateAuthField('lastNames', setLastNames, value)} error={fieldErrors.lastNames} />
+          <Field icon="person" label="Nombres" placeholder="Ej. Carlos Alberto" value={names} onChangeText={(value) => updateAuthField('names', setNames, value)} error={fieldErrors.names} />
+          <Field icon="people-outline" label="Apellidos" placeholder="Ej. Pérez Gómez" value={lastNames} onChangeText={(value) => updateAuthField('lastNames', setLastNames, value)} error={fieldErrors.lastNames} />
         </>
       )}
       <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={(value) => updateAuthField('email', setEmail, value)} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" error={fieldErrors.email} />
