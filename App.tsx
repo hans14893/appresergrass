@@ -158,6 +158,30 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
   };
 
+  const validateAuthField = (field: AuthField) => {
+    let error: string | undefined;
+    if (field === 'email') {
+      const value = email.trim();
+      error = !value ? 'El correo electrónico es obligatorio.'
+        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? 'Ingresa un correo válido, por ejemplo nombre@correo.com.' : undefined;
+    } else if (field === 'phone') {
+      error = !/^9\d{8}$/.test(phone) ? 'Debe tener 9 dígitos y comenzar con 9.' : undefined;
+    } else if (field === 'password') {
+      error = !password ? 'La contraseña es obligatoria.'
+        : !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,80}$/.test(password) ? 'Usa 8 caracteres como mínimo, mayúscula, minúscula y número.' : undefined;
+    } else if (field === 'confirmPassword') {
+      error = !confirmPassword ? 'Confirma tu contraseña.'
+        : password !== confirmPassword ? 'Las contraseñas no coinciden.' : undefined;
+    } else {
+      const value = field === 'names' ? names.trim() : lastNames.trim();
+      const label = field === 'names' ? 'nombres' : 'apellidos';
+      const personNamePattern = /^[\p{L}]+(?:[ '\-][\p{L}]+)*$/u;
+      error = value.length < 2 ? `Ingresa tus ${label}.`
+        : !personNamePattern.test(value) ? 'Usa solo letras, espacios, apóstrofes o guiones.' : undefined;
+    }
+    setFieldErrors((current) => ({ ...current, [field]: error }));
+  };
+
   const navigateAuth = (nextMode: AuthMode) => {
     setPassword('');
     setConfirmPassword('');
@@ -353,17 +377,17 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
       {mode === 'register' && (
         <>
-          <Field icon="person" label="Nombres" placeholder="Ej. Carlos Alberto" value={names} onChangeText={(value) => updateAuthField('names', setNames, value)} error={fieldErrors.names} />
-          <Field icon="people-outline" label="Apellidos" placeholder="Ej. Pérez Gómez" value={lastNames} onChangeText={(value) => updateAuthField('lastNames', setLastNames, value)} error={fieldErrors.lastNames} />
+          <Field icon="person" label="Nombres" placeholder="Ej. Carlos Alberto" value={names} onChangeText={(value) => updateAuthField('names', setNames, value)} onBlur={() => validateAuthField('names')} error={fieldErrors.names} />
+          <Field icon="people-outline" label="Apellidos" placeholder="Ej. Pérez Gómez" value={lastNames} onChangeText={(value) => updateAuthField('lastNames', setLastNames, value)} onBlur={() => validateAuthField('lastNames')} error={fieldErrors.lastNames} />
         </>
       )}
-      <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={(value) => updateAuthField('email', setEmail, value)} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" error={fieldErrors.email} />
-      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987654321" value={phone} onChangeText={(value) => updateAuthField('phone', setPhone, toNineDigits(value))} keyboardType="number-pad" maxLength={9} error={fieldErrors.phone} />}
-      <Field icon="lock-closed" label="Contraseña" placeholder="••••••••••" value={password} onChangeText={(value) => updateAuthField('password', setPassword, value)} secureTextEntry error={fieldErrors.password} />
+      <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={(value) => updateAuthField('email', setEmail, value)} onBlur={() => validateAuthField('email')} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" error={fieldErrors.email} />
+      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987654321" value={phone} onChangeText={(value) => updateAuthField('phone', setPhone, toNineDigits(value))} onBlur={() => validateAuthField('phone')} keyboardType="number-pad" maxLength={9} error={fieldErrors.phone} />}
+      <Field icon="lock-closed" label="Contraseña" placeholder="••••••••••" value={password} onChangeText={(value) => updateAuthField('password', setPassword, value)} onBlur={() => validateAuthField('password')} secureTextEntry error={fieldErrors.password} />
       {mode === 'register' && !fieldErrors.password && (
         <Text style={styles.authFieldHint}>Mínimo 8 caracteres, con mayúscula, minúscula y número.</Text>
       )}
-      {mode === 'register' && <Field icon="lock-closed-outline" label="Confirmar contraseña" placeholder="••••••••••" value={confirmPassword} onChangeText={(value) => updateAuthField('confirmPassword', setConfirmPassword, value)} secureTextEntry error={fieldErrors.confirmPassword} />}
+      {mode === 'register' && <Field icon="lock-closed-outline" label="Confirmar contraseña" placeholder="••••••••••" value={confirmPassword} onChangeText={(value) => updateAuthField('confirmPassword', setConfirmPassword, value)} onBlur={() => validateAuthField('confirmPassword')} secureTextEntry error={fieldErrors.confirmPassword} />}
 
       {mode === 'login' && (
         <View style={styles.loginOptions}>
