@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, OperationsDashboard, OperationsReservation, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -584,12 +584,14 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
 
   return (
     <View style={styles.appShell}>
-      {tab === 'home' && <Dashboard session={session} courts={courts} reservations={reservations} openCourt={openCourt} />}
+      {tab === 'home' && (canManage
+        ? <ManagedDashboard session={session} courts={courts} openCourt={openCourt} openReservations={() => setTab('reservations')} openCourts={() => setTab('courts')} />
+        : <Dashboard session={session} courts={courts} reservations={reservations} openCourt={openCourt} />)}
       {tab === 'reservations' && <ReservationsScreen reservations={reservations} courts={courts} canManage={canManage} refreshParent={loadReservations} />}
       {tab === 'courts' && <CourtsScreen courts={courts} openCourt={openCourt} />}
       {tab === 'admin' && <AdminCourtsScreen courts={courts} refresh={loadCourts} />}
       {tab === 'profile' && <ProfileScreen session={session} onLogout={onLogout} />}
-      <BottomTabs active={tab} onChange={setTab} isAdmin={session.role === 'ADMIN'} />
+      <BottomTabs active={tab} onChange={setTab} role={session.role} />
     </View>
   );
 }
@@ -628,6 +630,160 @@ function Dashboard({ session, courts, reservations, openCourt }: { session: Auth
         <EmptyCard text="Aún no tienes reservas para hoy." />
       ) : upcoming.map((item) => <ReservationCard key={item.id} reservation={item} />)}
     </ScrollView>
+  );
+}
+
+function ManagedDashboard({
+  session,
+  courts,
+  openCourt,
+  openReservations,
+  openCourts
+}: {
+  session: AuthResponse;
+  courts: Court[];
+  openCourt: (court: Court) => void;
+  openReservations: () => void;
+  openCourts: () => void;
+}) {
+  const [dashboard, setDashboard] = useState<OperationsDashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const loadDashboard = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      setDashboard(await api<OperationsDashboard>('/dashboard/operations'));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'No se pudo cargar el resumen.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, []);
+
+  const openWhatsApp = (reservation: OperationsReservation) => {
+    if (!reservation.clientPhone) {
+      Alert.alert('Sin celular', 'Esta reserva no tiene un celular registrado.');
+      return;
+    }
+    const message = `Hola ${reservation.clientName}, le escribimos de ReserGrass sobre su reserva de ${to12Hour(reservation.startTime)} a ${to12Hour(reservation.endTime)} en ${reservation.courtName}.`;
+    Linking.openURL(`https://wa.me/${normalizeWhatsappPhone(reservation.clientPhone)}?text=${encodeURIComponent(message)}`);
+  };
+
+  if (loading && !dashboard) {
+    return <View style={styles.managedLoading}><ActivityIndicator color="#58c83c" size="large" /><Text style={styles.bodyCopy}>Cargando operaciones de hoy...</Text></View>;
+  }
+
+  if (!dashboard) {
+    return (
+      <View style={styles.managedLoading}>
+        <Ionicons name="cloud-offline-outline" size={46} color="#e46b62" />
+        <Text style={styles.managedError}>{error}</Text>
+        <Pressable style={styles.primaryAction} onPress={loadDashboard}><Text style={styles.activeText}>Reintentar</Text></Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.managedPage}>
+      <View style={styles.managedHeader}>
+        <View>
+          <Text style={styles.managedEyebrow}>{session.role === 'ADMIN' ? 'PANEL ADMINISTRATIVO' : 'PANEL DE ATENCION'}</Text>
+          <Text style={styles.managedTitle}>Hola, {firstName(session.fullName)}</Text>
+          <Text style={styles.managedDate}>Operaciones de hoy - {dashboard.date}</Text>
+        </View>
+        <Pressable style={styles.refreshButton} onPress={loadDashboard} disabled={loading}>
+          <Ionicons name="refresh" size={22} color="#ffffff" />
+        </Pressable>
+      </View>
+
+      <View style={styles.quickActions}>
+        <Pressable style={styles.quickPrimary} onPress={openCourts}>
+          <Ionicons name="add-circle" size={25} color="#ffffff" />
+          <Text style={styles.quickActionText}>Nueva reserva</Text>
+        </Pressable>
+        <Pressable style={styles.quickSecondary} onPress={openReservations}>
+          <Ionicons name="calendar" size={23} color="#58c83c" />
+          <Text style={styles.quickSecondaryText}>Ver agenda</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.metricGrid}>
+        <OperationMetric icon="calendar-outline" value={dashboard.totalReservations} label="Reservas de hoy" color="#58c83c" />
+        <OperationMetric icon="football-outline" value={`${dashboard.occupiedCourts}/${dashboard.totalCourts}`} label="Canchas ocupadas" color="#ef5a4f" />
+        <OperationMetric icon="time-outline" value={dashboard.pendingReservations} label="Por confirmar" color="#f1ad3d" />
+        <OperationMetric
+          icon={session.role === 'ADMIN' ? 'cash-outline' : 'card-outline'}
+          value={session.role === 'ADMIN' ? `S/ ${formatMoney(dashboard.collectedAmount)}` : dashboard.pendingPayments}
+          label={session.role === 'ADMIN' ? 'Cobrado hoy' : 'Pagos pendientes'}
+          color="#3ba8e8"
+        />
+      </View>
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Estado de las canchas</Text>
+        <Pressable onPress={openCourts}><Text style={styles.greenLink}>Reservar</Text></Pressable>
+      </View>
+      {dashboard.courts.map((item) => {
+        const court = courts.find((candidate) => candidate.id === item.courtId);
+        const activeReservation = item.currentReservation ?? item.nextReservation;
+        return (
+          <Pressable key={item.courtId} style={styles.operationCourtCard} onPress={() => court && openCourt(court)}>
+            <View style={[styles.operationStatusBar, item.status === 'LIBRE' ? styles.operationFree : item.status === 'OCUPADA' ? styles.operationBusy : styles.operationWarning]} />
+            <View style={styles.operationCourtBody}>
+              <View style={styles.operationCourtHeader}>
+                <Text style={styles.operationCourtName}>{item.courtName}</Text>
+                <Text style={[styles.operationStatusText, item.status === 'LIBRE' && styles.greenText]}>{item.status}</Text>
+              </View>
+              {activeReservation ? (
+                <View>
+                  <Text style={styles.operationClient}>{item.currentReservation ? 'Ahora' : 'Siguiente'}: {activeReservation.clientName}</Text>
+                  <Text style={styles.operationTime}>{to12Hour(activeReservation.startTime)} - {to12Hour(activeReservation.endTime)}</Text>
+                </View>
+              ) : <Text style={styles.operationTime}>Sin reservas proximas</Text>}
+            </View>
+            <Ionicons name="chevron-forward" size={22} color="#758287" />
+          </Pressable>
+        );
+      })}
+
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Proximas reservas</Text>
+        <Pressable onPress={openReservations}><Text style={styles.greenLink}>Ver agenda</Text></Pressable>
+      </View>
+      {dashboard.upcomingReservations.length === 0 ? <EmptyCard text="No quedan reservas para hoy." /> : dashboard.upcomingReservations.map((item) => (
+        <View key={item.id} style={styles.upcomingOperationCard}>
+          <View style={styles.upcomingTimeBox}>
+            <Text style={styles.upcomingTime}>{to12Hour(item.startTime)}</Text>
+            <Text style={styles.upcomingCourt}>{item.courtName}</Text>
+          </View>
+          <View style={styles.upcomingInfo}>
+            <Text style={styles.operationClient}>{item.clientName}</Text>
+            <Text style={styles.operationTime}>{item.paymentStatus === 'PAGADO' ? 'Pago confirmado' : 'Pago pendiente'} - S/ {formatMoney(item.totalAmount)}</Text>
+          </View>
+          {!!item.clientPhone && (
+            <Pressable style={styles.whatsappMiniButton} onPress={() => openWhatsApp(item)}>
+              <Ionicons name="logo-whatsapp" size={21} color="#ffffff" />
+            </Pressable>
+          )}
+        </View>
+      ))}
+    </ScrollView>
+  );
+}
+
+function OperationMetric({ icon, value, label, color }: { icon: keyof typeof Ionicons.glyphMap; value: string | number; label: string; color: string }) {
+  return (
+    <View style={styles.operationMetric}>
+      <View style={[styles.metricIcon, { backgroundColor: `${color}22` }]}><Ionicons name={icon} size={22} color={color} /></View>
+      <Text style={styles.metricValue}>{value}</Text>
+      <Text style={styles.metricLabel}>{label}</Text>
+    </View>
   );
 }
 
@@ -2250,12 +2406,13 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BottomTabs({ active, onChange, isAdmin }: { active: HomeTab; onChange: (tab: HomeTab) => void; isAdmin: boolean }) {
+function BottomTabs({ active, onChange, role }: { active: HomeTab; onChange: (tab: HomeTab) => void; role: Role }) {
+  const canManage = role === 'ADMIN' || role === 'PERSONAL';
   const tabs: Array<{ key: HomeTab; icon: keyof typeof Ionicons.glyphMap; label: string }> = [
     { key: 'home', icon: 'home', label: 'Inicio' },
-    { key: 'reservations', icon: 'calendar-outline', label: 'Reservas' },
+    { key: 'reservations', icon: 'calendar-outline', label: canManage ? 'Agenda' : 'Reservas' },
     { key: 'courts', icon: 'football-outline', label: 'Canchas' },
-    ...(isAdmin ? [{ key: 'admin' as HomeTab, icon: 'settings' as keyof typeof Ionicons.glyphMap, label: 'Admin' }] : []),
+    ...(role === 'ADMIN' ? [{ key: 'admin' as HomeTab, icon: 'settings' as keyof typeof Ionicons.glyphMap, label: 'Gestion' }] : []),
     { key: 'profile', icon: 'person', label: 'Perfil' }
   ];
 
@@ -2433,6 +2590,42 @@ const styles = StyleSheet.create({
   outlineText: { color: '#ffffff' },
   appShell: { flex: 1, backgroundColor: '#020b0d' },
   page: { flexGrow: 1, padding: 22, paddingBottom: 104, backgroundColor: '#020b0d' },
+  managedPage: { flexGrow: 1, padding: 20, paddingBottom: 112, backgroundColor: '#020b0d' },
+  managedLoading: { flex: 1, backgroundColor: '#020b0d', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 30 },
+  managedError: { color: '#dce3e5', textAlign: 'center', lineHeight: 21 },
+  managedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  managedEyebrow: { color: '#58c83c', fontSize: 11, fontWeight: '900', letterSpacing: 1.1, marginBottom: 5 },
+  managedTitle: { color: '#ffffff', fontSize: 25, fontWeight: '900' },
+  managedDate: { color: '#829095', marginTop: 4 },
+  refreshButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#102125', alignItems: 'center', justifyContent: 'center' },
+  primaryAction: { backgroundColor: '#36b833', borderRadius: 10, minWidth: 130, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  quickActions: { flexDirection: 'row', gap: 10, marginBottom: 18 },
+  quickPrimary: { flex: 1, minHeight: 54, borderRadius: 12, backgroundColor: '#36b833', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
+  quickSecondary: { flex: 1, minHeight: 54, borderRadius: 12, backgroundColor: '#0a1719', borderWidth: 1, borderColor: '#294044', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center' },
+  quickActionText: { color: '#ffffff', fontWeight: '900' },
+  quickSecondaryText: { color: '#dce5e6', fontWeight: '900' },
+  metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 10 },
+  operationMetric: { width: '48.5%', minHeight: 118, backgroundColor: '#081719', borderRadius: 13, borderWidth: 1, borderColor: '#172b30', padding: 14 },
+  metricIcon: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  metricValue: { color: '#ffffff', fontSize: 21, fontWeight: '900' },
+  metricLabel: { color: '#8e9b9f', fontSize: 12, marginTop: 3 },
+  operationCourtCard: { minHeight: 84, flexDirection: 'row', alignItems: 'center', backgroundColor: '#081719', borderRadius: 12, borderWidth: 1, borderColor: '#182c31', overflow: 'hidden', marginBottom: 9, paddingRight: 13 },
+  operationStatusBar: { width: 5, alignSelf: 'stretch', marginRight: 13 },
+  operationFree: { backgroundColor: '#58c83c' },
+  operationBusy: { backgroundColor: '#e64c43' },
+  operationWarning: { backgroundColor: '#e3a63b' },
+  operationCourtBody: { flex: 1, paddingVertical: 12 },
+  operationCourtHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  operationCourtName: { color: '#ffffff', fontSize: 15, fontWeight: '900' },
+  operationStatusText: { color: '#e3a63b', fontSize: 10, fontWeight: '900' },
+  operationClient: { color: '#e8edef', fontWeight: '800' },
+  operationTime: { color: '#849297', fontSize: 12, marginTop: 3 },
+  upcomingOperationCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#081719', borderRadius: 12, padding: 12, marginBottom: 9, borderWidth: 1, borderColor: '#182c31' },
+  upcomingTimeBox: { width: 88, paddingRight: 10 },
+  upcomingTime: { color: '#58c83c', fontSize: 14, fontWeight: '900' },
+  upcomingCourt: { color: '#819095', fontSize: 10, marginTop: 3 },
+  upcomingInfo: { flex: 1, borderLeftWidth: 1, borderLeftColor: '#203439', paddingLeft: 12 },
+  whatsappMiniButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#20a85a', alignItems: 'center', justifyContent: 'center', marginLeft: 8 },
   pageFixed: { flex: 1, padding: 20, paddingBottom: 92, backgroundColor: '#020b0d' },
   topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 28 },
   location: { color: '#ffffff', fontWeight: '800' },

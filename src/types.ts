@@ -155,6 +155,39 @@ export type ReservationQuote = {
   totalAmount: number;
   breakdown: ReservationQuoteItem[];
 };
+
+export type OperationsReservation = {
+  id: number;
+  courtId: number;
+  courtName: string;
+  clientName: string;
+  clientPhone?: string;
+  startTime: string;
+  endTime: string;
+  status: Reservation['status'];
+  paymentStatus: Reservation['paymentStatus'];
+  totalAmount: number;
+};
+
+export type CourtOperation = {
+  courtId: number;
+  courtName: string;
+  status: 'LIBRE' | 'OCUPADA' | 'MANTENIMIENTO' | 'DESHABILITADA';
+  currentReservation?: OperationsReservation;
+  nextReservation?: OperationsReservation;
+};
+
+export type OperationsDashboard = {
+  date: string;
+  totalReservations: number;
+  pendingReservations: number;
+  pendingPayments: number;
+  occupiedCourts: number;
+  totalCourts: number;
+  collectedAmount: number;
+  courts: CourtOperation[];
+  upcomingReservations: OperationsReservation[];
+};
 export type PaymentConfig = {
   ownerName: string;
   yapePhoneNumber: string;
