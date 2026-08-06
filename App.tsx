@@ -49,6 +49,8 @@ const courtImages = [
 ];
 
 type AuthMode = 'welcome' | 'login' | 'register' | 'verify' | 'forgot';
+type AuthField = 'names' | 'lastNames' | 'email' | 'phone' | 'password' | 'confirmPassword';
+type AuthFieldErrors = Partial<Record<AuthField, string>>;
 type HomeTab = 'home' | 'reservations' | 'courts' | 'admin' | 'profile';
 
 type ReservationDraft = {
@@ -147,7 +149,14 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
   const [busy, setBusy] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
+  const [verificationError, setVerificationError] = useState<string>();
   const [resendRemaining, setResendRemaining] = useState(0);
+  const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
+
+  const updateAuthField = (field: AuthField, setter: (value: string) => void, value: string) => {
+    setter(value);
+    setFieldErrors((current) => ({ ...current, [field]: undefined }));
+  };
 
   useEffect(() => {
     if (mode !== 'verify' || resendRemaining <= 0) return;
@@ -157,20 +166,38 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
   const submit = async () => {
     const normalizedEmail = email.trim().toLowerCase();
-    if (mode === 'register' && (!names.trim() || !lastNames.trim())) {
-      Alert.alert('Nombre completo', 'Ingresa tus nombres y apellidos.');
-      return;
+    const errors: AuthFieldErrors = {};
+    if (!normalizedEmail) {
+      errors.email = 'El correo electrónico es obligatorio.';
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      errors.email = 'Ingresa un correo válido, por ejemplo nombre@correo.com.';
     }
-    if (mode === 'register' && phone.length !== 9) {
-      Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
-      return;
+    if (!password) errors.password = 'La contraseña es obligatoria.';
+    if (mode === 'register') {
+      const personNamePattern = /^[\p{L}]+(?:[ '\-][\p{L}]+)*$/u;
+      if (names.trim().length < 2) {
+        errors.names = 'Ingresa tus nombres.';
+      } else if (!personNamePattern.test(names.trim())) {
+        errors.names = 'Usa solo letras, espacios, apóstrofes o guiones.';
+      }
+      if (lastNames.trim().length < 2) {
+        errors.lastNames = 'Ingresa tus apellidos.';
+      } else if (!personNamePattern.test(lastNames.trim())) {
+        errors.lastNames = 'Usa solo letras, espacios, apóstrofes o guiones.';
+      }
+      if (!/^9\d{8}$/.test(phone)) errors.phone = 'Debe tener 9 dígitos y comenzar con 9.';
+      if (password && !/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,80}$/.test(password)) {
+        errors.password = 'Usa 8 caracteres como mínimo, mayúscula, minúscula y número.';
+      }
+      if (!confirmPassword) {
+        errors.confirmPassword = 'Confirma tu contraseña.';
+      } else if (password !== confirmPassword) {
+        errors.confirmPassword = 'Las contraseñas no coinciden.';
+      }
     }
-    if (mode === 'register' && password !== confirmPassword) {
-      Alert.alert('Contraseñas', 'La confirmación no coincide.');
-      return;
-    }
-    if (mode === 'register' && password.length < 8) {
-      Alert.alert('Contraseña', 'La contraseña debe tener al menos 8 caracteres.');
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      Alert.alert('Revisa tus datos', 'Corrige los campos marcados para continuar.');
       return;
     }
 
@@ -189,6 +216,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
         });
         setVerificationEmail(payload.email);
         setVerificationCode('');
+        setVerificationError(undefined);
         setResendRemaining(payload.resendAfterSeconds);
         setMode('verify');
       }
@@ -201,7 +229,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
   const verifyEmail = async () => {
     if (verificationCode.length !== 6) {
-      Alert.alert('Código', 'Ingresa los 6 dígitos enviados a tu correo.');
+      setVerificationError('Ingresa los 6 dígitos enviados a tu correo.');
       return;
     }
     try {
@@ -212,7 +240,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
       });
       await onAuth(auth, true);
     } catch (error) {
-      Alert.alert('No se pudo verificar', error instanceof Error ? error.message : 'Error desconocido');
+      setVerificationError(error instanceof Error ? error.message : 'No se pudo verificar el código.');
     } finally {
       setBusy(false);
     }
@@ -227,6 +255,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
         body: { email: verificationEmail }
       });
       setVerificationCode('');
+      setVerificationError(undefined);
       setResendRemaining(payload.resendAfterSeconds);
       Alert.alert('Código enviado', payload.message);
     } catch (error) {
@@ -251,9 +280,13 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
           label="Código de verificación"
           placeholder="000000"
           value={verificationCode}
-          onChangeText={(value) => setVerificationCode(value.replace(/\D/g, '').slice(0, 6))}
+          onChangeText={(value) => {
+            setVerificationCode(value.replace(/\D/g, '').slice(0, 6));
+            setVerificationError(undefined);
+          }}
           keyboardType="number-pad"
           maxLength={6}
+          error={verificationError}
         />
         <Button
           title={busy ? 'Verificando...' : 'Verificar y continuar'}
@@ -313,14 +346,17 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
       {mode === 'register' && (
         <>
-          <Field icon="person" label="Nombres" placeholder="Hans Martín" value={names} onChangeText={setNames} />
-          <Field icon="people-outline" label="Apellidos" placeholder="Matencios Parian" value={lastNames} onChangeText={setLastNames} />
+          <Field icon="person" label="Nombres" placeholder="Hans Martín" value={names} onChangeText={(value) => updateAuthField('names', setNames, value)} error={fieldErrors.names} />
+          <Field icon="people-outline" label="Apellidos" placeholder="Matencios Parian" value={lastNames} onChangeText={(value) => updateAuthField('lastNames', setLastNames, value)} error={fieldErrors.lastNames} />
         </>
       )}
-      <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987 654 321" value={phone} onChangeText={(value) => setPhone(toNineDigits(value))} keyboardType="number-pad" maxLength={9} />}
-      <Field icon="lock-closed" label="Contraseña" placeholder="••••••••••" value={password} onChangeText={setPassword} secureTextEntry />
-      {mode === 'register' && <Field icon="lock-closed-outline" label="Confirmar contraseña" placeholder="••••••••••" value={confirmPassword} onChangeText={setConfirmPassword} secureTextEntry />}
+      <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={(value) => updateAuthField('email', setEmail, value)} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" error={fieldErrors.email} />
+      {mode === 'register' && <Field icon="phone-portrait-outline" label="Celular" placeholder="987654321" value={phone} onChangeText={(value) => updateAuthField('phone', setPhone, toNineDigits(value))} keyboardType="number-pad" maxLength={9} error={fieldErrors.phone} />}
+      <Field icon="lock-closed" label="Contraseña" placeholder="••••••••••" value={password} onChangeText={(value) => updateAuthField('password', setPassword, value)} secureTextEntry error={fieldErrors.password} />
+      {mode === 'register' && !fieldErrors.password && (
+        <Text style={styles.authFieldHint}>Mínimo 8 caracteres, con mayúscula, minúscula y número.</Text>
+      )}
+      {mode === 'register' && <Field icon="lock-closed-outline" label="Confirmar contraseña" placeholder="••••••••••" value={confirmPassword} onChangeText={(value) => updateAuthField('confirmPassword', setConfirmPassword, value)} secureTextEntry error={fieldErrors.confirmPassword} />}
 
       {mode === 'login' && (
         <View style={styles.loginOptions}>
@@ -1850,14 +1886,15 @@ function ProfileScreen({ session, onLogout }: { session: AuthResponse; onLogout:
   );
 }
 
-function Field(props: React.ComponentProps<typeof TextInput> & { icon: keyof typeof Ionicons.glyphMap; label: string }) {
-  const { icon, label, style, secureTextEntry, ...rest } = props;
+function Field(props: React.ComponentProps<typeof TextInput> & { icon: keyof typeof Ionicons.glyphMap; label: string; error?: string }) {
+  const { icon, label, error, style, secureTextEntry, ...rest } = props;
   const [passwordVisible, setPasswordVisible] = useState(false);
   return (
-    <View style={styles.field}>
-      <Ionicons name={icon} size={19} color="#9aa4ad" />
+    <View style={styles.fieldGroup}>
+      <View style={[styles.field, error && styles.fieldError]}>
+      <Ionicons name={icon} size={19} color={error ? '#ff6b6b' : '#9aa4ad'} />
       <View style={styles.fieldBody}>
-        <Text style={styles.fieldLabel}>{label}</Text>
+        <Text style={[styles.fieldLabel, error && styles.fieldLabelError]}>{label}</Text>
         <TextInput
           style={[styles.fieldInput, style]}
           placeholderTextColor="#77808a"
@@ -1876,6 +1913,8 @@ function Field(props: React.ComponentProps<typeof TextInput> & { icon: keyof typ
           <Ionicons name={passwordVisible ? 'eye-off-outline' : 'eye-outline'} size={21} color="#9aa4ad" />
         </Pressable>
       )}
+      </View>
+      {error && <Text style={styles.fieldErrorText}>{error}</Text>}
     </View>
   );
 }
@@ -2081,7 +2120,12 @@ const styles = StyleSheet.create({
   backButton: { width: 44, height: 44, justifyContent: 'center', marginBottom: 12 },
   authTitle: { color: '#ffffff', fontSize: 28, fontWeight: '900', marginTop: 8 },
   authSub: { color: '#c6ced4', fontSize: 14, marginBottom: 18 },
+  fieldGroup: { gap: 5 },
   field: { minHeight: 58, borderWidth: 1, borderColor: '#1f3236', borderRadius: 8, paddingHorizontal: 14, backgroundColor: 'rgba(11, 23, 26, 0.95)', flexDirection: 'row', alignItems: 'center', gap: 12 },
+  fieldError: { borderColor: '#ff6b6b' },
+  fieldLabelError: { color: '#ff8a8a' },
+  fieldErrorText: { color: '#ff8a8a', fontSize: 12, lineHeight: 16, paddingHorizontal: 4 },
+  authFieldHint: { color: '#829097', fontSize: 11, lineHeight: 15, paddingHorizontal: 4, marginTop: -3 },
   fieldBody: { flex: 1 },
   fieldLabel: { color: '#c5cdd3', fontSize: 11, fontWeight: '700' },
   fieldInput: { color: '#ffffff', fontSize: 14, paddingVertical: 3 },
