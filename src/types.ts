@@ -139,6 +139,21 @@ export type CalendarSlot = {
   reservationStartTime?: string;
   reservationEndTime?: string;
 };
+
+export type ReservationQuoteItem = {
+  startTime: string;
+  endTime: string;
+  amount: number;
+};
+
+export type ReservationQuote = {
+  courtId: number;
+  date: string;
+  startTime: string;
+  endTime: string;
+  totalAmount: number;
+  breakdown: ReservationQuoteItem[];
+};
 export type PaymentConfig = {
   ownerName: string;
   yapePhoneNumber: string;

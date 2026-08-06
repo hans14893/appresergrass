@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -673,9 +673,19 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
   const [guestName, setGuestName] = useState('');
   const [guestPhone, setGuestPhone] = useState('');
   const [selectedReservationSlot, setSelectedReservationSlot] = useState<CalendarSlot | null>(null);
+  const [quote, setQuote] = useState<ReservationQuote | null>(null);
+  const [loadingQuote, setLoadingQuote] = useState(false);
   const canUseGuest = session.role === 'ADMIN' || session.role === 'PERSONAL';
 
   const selectedSlotIndex = slots.findIndex((slot) => slot.startTime === time);
+  const consecutiveSlots = selectedSlotIndex < 0 ? [] : slots.slice(selectedSlotIndex).reduce<CalendarSlot[]>((result, slot) => {
+    const previous = result[result.length - 1];
+    if (slot.status !== 'DISPONIBLE' || (previous && previous.endTime !== slot.startTime)) return result;
+    result.push(slot);
+    return result;
+  }, []);
+  const durationOptions = consecutiveSlots.map((_, index) => index + 1);
+  const quoteEndTime = consecutiveSlots[consecutiveSlots.length - 1]?.endTime ?? '';
   const canSelectDuration = (hours: number) => {
     if (selectedSlotIndex < 0) return false;
     const range = slots.slice(selectedSlotIndex, selectedSlotIndex + hours);
@@ -715,6 +725,38 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       unsubscribe();
     };
   }, [court.id, dateIndex]);
+
+  useEffect(() => {
+    let active = true;
+    if (!time || !quoteEndTime) {
+      setQuote(null);
+      return () => { active = false; };
+    }
+    const loadQuote = async () => {
+      try {
+        setLoadingQuote(true);
+        const selectedDate = dateOptions[dateIndex].iso;
+        const result = await api<ReservationQuote>(
+          `/reservations/quote?courtId=${court.id}&date=${selectedDate}&startTime=${time}&endTime=${quoteEndTime}`
+        );
+        if (active) setQuote(result);
+      } catch {
+        if (active) setQuote(null);
+      } finally {
+        if (active) setLoadingQuote(false);
+      }
+    };
+    loadQuote();
+    return () => { active = false; };
+  }, [court.id, dateIndex, time, quoteEndTime]);
+
+  const priceForDuration = (hours: number) => {
+    const targetEnd = consecutiveSlots[hours - 1]?.endTime;
+    if (!quote || !targetEnd) return null;
+    return quote.breakdown
+      .filter((item) => item.endTime <= targetEnd)
+      .reduce((total, item) => total + Number(item.amount), 0);
+  };
 
   const reserve = async () => {
     const selectedSlot = slots.find((slot) => slot.startTime === time && slot.status === 'DISPONIBLE');
@@ -845,9 +887,10 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       {!!time && (
         <>
           <Text style={styles.sectionTitle}>¿Cuántas horas deseas?</Text>
-          <View style={styles.durationRow}>
-            {[1, 2, 3].map((hours) => {
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.durationRow}>
+            {durationOptions.map((hours) => {
               const enabled = canSelectDuration(hours);
+              const optionPrice = priceForDuration(hours);
               return (
                 <Pressable
                   key={hours}
@@ -858,13 +901,35 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
                   <Text style={[styles.durationOptionText, durationHours === hours && styles.activeText]}>
                     {hours} {hours === 1 ? 'hora' : 'horas'}
                   </Text>
+                  <Text style={[styles.durationPriceText, durationHours === hours && styles.activeText]}>
+                    {optionPrice === null ? 'Calculando...' : `S/ ${formatMoney(optionPrice)}`}
+                  </Text>
                 </Pressable>
               );
             })}
-          </View>
+          </ScrollView>
           <Text style={styles.selectionSummary}>
             Reserva: {to12Hour(time)} - {to12Hour(slots[selectedSlotIndex + durationHours - 1]?.endTime ?? time)}
           </Text>
+          {loadingQuote ? (
+            <ActivityIndicator color="#58c83c" />
+          ) : quote ? (
+            <View style={styles.priceBreakdownCard}>
+              <Text style={styles.priceBreakdownTitle}>Detalle del precio</Text>
+              {quote.breakdown
+                .filter((item) => item.endTime <= (consecutiveSlots[durationHours - 1]?.endTime ?? time))
+                .map((item) => (
+                  <View key={`${item.startTime}-${item.endTime}`} style={styles.priceBreakdownRow}>
+                    <Text style={styles.priceBreakdownLabel}>{to12Hour(item.startTime)} - {to12Hour(item.endTime)}</Text>
+                    <Text style={styles.priceBreakdownAmount}>S/ {formatMoney(item.amount)}</Text>
+                  </View>
+                ))}
+              <View style={styles.priceTotalRow}>
+                <Text style={styles.priceTotalLabel}>Total por {durationHours} {durationHours === 1 ? 'hora' : 'horas'}</Text>
+                <Text style={styles.priceTotalAmount}>S/ {formatMoney(priceForDuration(durationHours) ?? 0)}</Text>
+              </View>
+            </View>
+          ) : null}
         </>
       )}
       {canUseGuest && (
@@ -2434,10 +2499,19 @@ const styles = StyleSheet.create({
   slotActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   slotText: { color: '#ffffff', fontWeight: '900', textAlign: 'center', fontSize: 12 },
   durationRow: { paddingHorizontal: 20, flexDirection: 'row', gap: 10 },
-  durationOption: { flex: 1, minHeight: 50, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  durationOption: { width: 125, minHeight: 62, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
   durationOptionActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   durationOptionDisabled: { opacity: 0.35 },
   durationOptionText: { color: '#ffffff', fontWeight: '800' },
+  durationPriceText: { color: '#72d45b', fontSize: 12, fontWeight: '800', marginTop: 4 },
+  priceBreakdownCard: { marginHorizontal: 20, marginBottom: 18, padding: 15, borderRadius: 12, backgroundColor: '#0a1719', borderWidth: 1, borderColor: '#203437' },
+  priceBreakdownTitle: { color: '#ffffff', fontSize: 15, fontWeight: '900', marginBottom: 10 },
+  priceBreakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
+  priceBreakdownLabel: { color: '#aebbbb', fontSize: 13 },
+  priceBreakdownAmount: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
+  priceTotalRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9, paddingTop: 11, borderTopWidth: 1, borderTopColor: '#294044' },
+  priceTotalLabel: { color: '#ffffff', fontWeight: '800' },
+  priceTotalAmount: { color: '#58c83c', fontSize: 18, fontWeight: '900' },
   selectionSummary: { color: '#cbd4d8', textAlign: 'center', marginTop: 11, marginBottom: 4, fontWeight: '700' },
   successScreen: { flexGrow: 1, padding: 24, justifyContent: 'center', backgroundColor: '#020b0d' },
   successCircle: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#58c83c', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 20 },
