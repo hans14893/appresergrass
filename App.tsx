@@ -770,12 +770,12 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       return;
     }
     const endTime = slots[selectedSlotIndex + durationHours - 1].endTime;
-    if (canUseGuest && guestPhone.length !== 9) {
-      Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
-      return;
-    }
     if (canUseGuest && !guestName.trim()) {
       Alert.alert('Nombre requerido', 'Ingresa el nombre de la persona que llama para registrar la reserva.');
+      return;
+    }
+    if (canUseGuest && !/^9\d{8}$/.test(guestPhone)) {
+      Alert.alert('Celular requerido', 'Ingresa un celular de 9 dígitos que comience con 9.');
       return;
     }
 
@@ -931,8 +931,8 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       {canUseGuest && (
         <View style={styles.adminCard}>
           <Text style={styles.sectionTitle}>Datos de quien llama</Text>
-          <AdminInput label="Nombre" placeholder="Ej: Juan Perez" value={guestName} onChangeText={setGuestName} />
-          <AdminInput label="Celular" placeholder="987 654 321" value={guestPhone} onChangeText={(value) => setGuestPhone(toNineDigits(value))} keyboardType="number-pad" maxLength={9} />
+          <AdminInput label="Nombre *" placeholder="Nombre del cliente" value={guestName} onChangeText={setGuestName} />
+          <AdminInput label="Celular *" placeholder="987 654 321" value={guestPhone} onChangeText={(value) => setGuestPhone(toNineDigits(value))} keyboardType="number-pad" maxLength={9} />
         </View>
       )}
       <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active || !time} />
