@@ -158,6 +158,13 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
     setFieldErrors((current) => ({ ...current, [field]: undefined }));
   };
 
+  const navigateAuth = (nextMode: AuthMode) => {
+    setPassword('');
+    setConfirmPassword('');
+    setFieldErrors({});
+    setMode(nextMode);
+  };
+
   useEffect(() => {
     if (mode !== 'verify' || resendRemaining <= 0) return;
     const timer = setInterval(() => setResendRemaining((current) => Math.max(0, current - 1)), 1000);
@@ -267,7 +274,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
   if (mode === 'verify') {
     return (
-      <AuthShell onBack={() => setMode('register')}>
+      <AuthShell onBack={() => navigateAuth('register')}>
         <View style={styles.forgotIcon}>
           <Ionicons name="shield-checkmark" size={44} color="#ffffff" />
         </View>
@@ -298,7 +305,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
             {resendRemaining > 0 ? `Reenviar código en ${resendRemaining}s` : 'Reenviar código'}
           </Text>
         </Pressable>
-        <Pressable onPress={() => setMode('register')}>
+        <Pressable onPress={() => navigateAuth('register')}>
           <Text style={styles.mutedCenter}>Corregir mis datos</Text>
         </Pressable>
       </AuthShell>
@@ -315,8 +322,8 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
         <Text style={styles.logoText}>RESER<Text style={styles.greenText}>GRASS</Text></Text>
         <Text style={styles.welcomeCopy}>Reserva tu cancha, disfruta el juego</Text>
         <View style={styles.welcomeActions}>
-          <Button title="Iniciar sesión" onPress={() => setMode('login')} />
-          <Button title="Crear cuenta" variant="outline" onPress={() => setMode('register')} />
+          <Button title="Iniciar sesión" onPress={() => navigateAuth('login')} />
+          <Button title="Crear cuenta" variant="outline" onPress={() => navigateAuth('register')} />
         </View>
       </ImageBackground>
     );
@@ -324,7 +331,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
 
   if (mode === 'forgot') {
     return (
-      <AuthShell onBack={() => setMode('login')}>
+      <AuthShell onBack={() => navigateAuth('login')}>
         <View style={styles.forgotIcon}>
           <Ionicons name="mail" size={44} color="#ffffff" />
         </View>
@@ -332,7 +339,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
         <Text style={styles.centerCopy}>Ingresa tu correo electrónico y te enviaremos un enlace para restablecer tu contraseña.</Text>
         <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
         <Button title="Enviar enlace" onPress={() => Alert.alert('Recuperación', 'Función lista para conectar con el backend.')} />
-        <Pressable onPress={() => setMode('login')}>
+        <Pressable onPress={() => navigateAuth('login')}>
           <Text style={styles.mutedCenter}>Volver al inicio de sesión</Text>
         </Pressable>
       </AuthShell>
@@ -340,7 +347,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
   }
 
   return (
-    <AuthShell onBack={() => setMode('welcome')}>
+    <AuthShell onBack={() => navigateAuth('welcome')}>
       <Text style={styles.authTitle}>{mode === 'login' ? 'Bienvenido' : 'Crear cuenta'}</Text>
       <Text style={styles.authSub}>{mode === 'login' ? 'Inicia sesión para continuar' : 'Únete a ReserGrass'}</Text>
 
@@ -364,7 +371,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
             <Ionicons name={remember ? 'checkbox' : 'square-outline'} size={20} color="#59c13a" />
             <Text style={styles.muted}>Recordarme</Text>
           </Pressable>
-          <Pressable onPress={() => setMode('forgot')}>
+          <Pressable onPress={() => navigateAuth('forgot')}>
             <Text style={styles.greenLink}>¿Olvidaste tu contraseña?</Text>
           </Pressable>
         </View>
@@ -373,7 +380,7 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
       <Button title={busy ? 'Procesando...' : mode === 'login' ? 'Iniciar sesión' : 'Crear mi cuenta'} onPress={submit} disabled={busy} />
 
 
-      <Pressable onPress={() => setMode(mode === 'login' ? 'register' : 'login')}>
+      <Pressable onPress={() => navigateAuth(mode === 'login' ? 'register' : 'login')}>
         <Text style={styles.mutedCenter}>
           {mode === 'login' ? '¿No tienes cuenta? ' : '¿Ya tienes cuenta? '}
           <Text style={styles.greenLink}>{mode === 'login' ? 'Crear cuenta' : 'Iniciar sesión'}</Text>
