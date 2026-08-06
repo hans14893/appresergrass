@@ -666,12 +666,24 @@ function CourtsScreen({ courts, openCourt }: { courts: Court[]; openCourt: (cour
 function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Court; session: AuthResponse; onBack: () => void; onReserved: (draft: ReservationDraft) => void }) {
   const [dateIndex, setDateIndex] = useState(0);
   const [time, setTime] = useState('');
+  const [durationHours, setDurationHours] = useState(1);
   const [slots, setSlots] = useState<CalendarSlot[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(true);
   const [busy, setBusy] = useState(false);
   const [guestName, setGuestName] = useState('');
   const [guestPhone, setGuestPhone] = useState('');
+  const [selectedReservationSlot, setSelectedReservationSlot] = useState<CalendarSlot | null>(null);
   const canUseGuest = session.role === 'ADMIN' || session.role === 'PERSONAL';
+
+  const selectedSlotIndex = slots.findIndex((slot) => slot.startTime === time);
+  const canSelectDuration = (hours: number) => {
+    if (selectedSlotIndex < 0) return false;
+    const range = slots.slice(selectedSlotIndex, selectedSlotIndex + hours);
+    return range.length === hours && range.every((slot, index) =>
+      slot.status === 'DISPONIBLE'
+      && (index === 0 || range[index - 1].endTime === slot.startTime)
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -685,6 +697,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
         setTime((current) => calendar.some((slot) => slot.startTime === current && slot.status === 'DISPONIBLE')
           ? current
           : calendar.find((slot) => slot.status === 'DISPONIBLE')?.startTime ?? '');
+        setDurationHours(1);
       } catch (error) {
         if (active) {
           setSlots([]);
@@ -710,7 +723,11 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       Alert.alert('Horario requerido', 'Selecciona un horario disponible.');
       return;
     }
-    const endTime = selectedSlot.endTime;
+    if (!canSelectDuration(durationHours)) {
+      Alert.alert('Duración no disponible', 'Selecciona horas consecutivas que estén disponibles.');
+      return;
+    }
+    const endTime = slots[selectedSlotIndex + durationHours - 1].endTime;
     if (canUseGuest && guestPhone.length !== 9) {
       Alert.alert('Celular', 'El número de celular debe tener exactamente 9 dígitos.');
       return;
@@ -739,6 +756,20 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
     } finally {
       setBusy(false);
     }
+  };
+
+  const contactReservedClient = () => {
+    if (!selectedReservationSlot?.reservationPhone) return;
+    const phone = normalizeWhatsappPhone(selectedReservationSlot.reservationPhone);
+    const message = [
+      `Hola ${selectedReservationSlot.reservationName ?? ''}.`,
+      '',
+      'Le escribimos de ReserGrass acerca de su reserva.',
+      `Cancha: ${court.name}`,
+      `Fecha: ${dateOptions[dateIndex].iso}`,
+      `Hora: ${to12Hour(selectedReservationSlot.reservationStartTime ?? selectedReservationSlot.startTime)} - ${to12Hour(selectedReservationSlot.reservationEndTime ?? selectedReservationSlot.endTime)}`
+    ].join('\n');
+    Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`);
   };
 
   return (
@@ -773,22 +804,68 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
         <EmptyCard text="No hay horarios configurados para este día." />
       ) : (
         <View style={styles.timeGrid}>
-          {slots.map((slot) => {
+          {slots.map((slot, index) => {
             const available = slot.status === 'DISPONIBLE';
+            const reserved = slot.status === 'RESERVADO' || slot.status === 'PENDIENTE';
+            const selected = selectedSlotIndex >= 0
+              && index >= selectedSlotIndex
+              && index < selectedSlotIndex + durationHours
+              && canSelectDuration(durationHours);
             return (
               <Pressable
                 key={`${slot.startTime}-${slot.endTime}`}
-                style={[styles.slot, !available && styles.slotDisabled, slot.startTime === time && styles.slotActive]}
-                onPress={() => setTime(slot.startTime)}
-                disabled={!available}
+                style={[
+                  styles.slot,
+                  !available && !reserved && styles.slotDisabled,
+                  reserved && styles.slotReserved,
+                  selected && styles.slotActive
+                ]}
+                onPress={() => {
+                  if (available) {
+                    setTime(slot.startTime);
+                    setDurationHours(1);
+                  } else if (canUseGuest && reserved && slot.reservationId) {
+                    setSelectedReservationSlot(slot);
+                  }
+                }}
+                disabled={!available && !(canUseGuest && reserved)}
               >
-                <Text style={[styles.slotText, !available && styles.slotTextDisabled, slot.startTime === time && styles.activeText]}>
-                  {to12Hour(slot.startTime)}
+                <Text style={[styles.slotText, !available && !reserved && styles.slotTextDisabled, selected && styles.activeText]}>
+                  {reserved
+                    ? canUseGuest && slot.reservationName
+                      ? `Reservado\n${slot.reservationName}`
+                      : 'Reservado'
+                    : to12Hour(slot.startTime)}
                 </Text>
               </Pressable>
             );
           })}
         </View>
+      )}
+      {!!time && (
+        <>
+          <Text style={styles.sectionTitle}>¿Cuántas horas deseas?</Text>
+          <View style={styles.durationRow}>
+            {[1, 2, 3].map((hours) => {
+              const enabled = canSelectDuration(hours);
+              return (
+                <Pressable
+                  key={hours}
+                  style={[styles.durationOption, durationHours === hours && styles.durationOptionActive, !enabled && styles.durationOptionDisabled]}
+                  onPress={() => setDurationHours(hours)}
+                  disabled={!enabled}
+                >
+                  <Text style={[styles.durationOptionText, durationHours === hours && styles.activeText]}>
+                    {hours} {hours === 1 ? 'hora' : 'horas'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={styles.selectionSummary}>
+            Reserva: {to12Hour(time)} - {to12Hour(slots[selectedSlotIndex + durationHours - 1]?.endTime ?? time)}
+          </Text>
+        </>
       )}
       {canUseGuest && (
         <View style={styles.adminCard}>
@@ -798,6 +875,32 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
         </View>
       )}
       <Button title={busy ? 'Reservando...' : 'Reservar ahora'} onPress={reserve} disabled={busy || !court.active || !time} />
+      <Modal visible={Boolean(selectedReservationSlot)} transparent animationType="fade" onRequestClose={() => setSelectedReservationSlot(null)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.saveConfirmationModal}>
+            <View style={[styles.saveSuccessIcon, { backgroundColor: '#d93a32' }]}>
+              <Ionicons name="calendar" size={34} color="#ffffff" />
+            </View>
+            <Text style={styles.saveConfirmationEyebrow}>RESERVA OCUPADA</Text>
+            <Text style={styles.saveConfirmationTitle}>{selectedReservationSlot?.reservationName ?? 'Cliente'}</Text>
+            <View style={styles.saveSummaryCard}>
+              <SummaryRow label="Cancha" value={court.name} />
+              <SummaryRow label="Fecha" value={dateOptions[dateIndex].iso} />
+              <SummaryRow
+                label="Horario"
+                value={`${to12Hour(selectedReservationSlot?.reservationStartTime ?? selectedReservationSlot?.startTime ?? '')} - ${to12Hour(selectedReservationSlot?.reservationEndTime ?? selectedReservationSlot?.endTime ?? '')}`}
+              />
+              <SummaryRow label="Celular" value={selectedReservationSlot?.reservationPhone ?? 'No registrado'} />
+            </View>
+            {selectedReservationSlot?.reservationPhone && (
+              <Button title="Escribir por WhatsApp" onPress={contactReservedClient} />
+            )}
+            <Pressable onPress={() => setSelectedReservationSlot(null)}>
+              <Text style={styles.mutedCenter}>Cerrar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -2327,8 +2430,15 @@ const styles = StyleSheet.create({
   slot: { width: '30.5%', minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1a3035', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
   slotDisabled: { opacity: 0.45, backgroundColor: '#182124' },
   slotTextDisabled: { color: '#7f898f' },
+  slotReserved: { minHeight: 64, backgroundColor: '#6f1717', borderColor: '#ff5148' },
   slotActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
-  slotText: { color: '#ffffff', fontWeight: '900' },
+  slotText: { color: '#ffffff', fontWeight: '900', textAlign: 'center', fontSize: 12 },
+  durationRow: { paddingHorizontal: 20, flexDirection: 'row', gap: 10 },
+  durationOption: { flex: 1, minHeight: 50, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  durationOptionActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
+  durationOptionDisabled: { opacity: 0.35 },
+  durationOptionText: { color: '#ffffff', fontWeight: '800' },
+  selectionSummary: { color: '#cbd4d8', textAlign: 'center', marginTop: 11, marginBottom: 4, fontWeight: '700' },
   successScreen: { flexGrow: 1, padding: 24, justifyContent: 'center', backgroundColor: '#020b0d' },
   successCircle: { width: 96, height: 96, borderRadius: 48, backgroundColor: '#58c83c', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 20 },
   successTitle: { color: '#ffffff', fontSize: 26, fontWeight: '900', textAlign: 'center', marginBottom: 8 },

@@ -111,6 +111,7 @@ export type Reservation = {
   id: number;
   clientId?: number;
   clientName: string;
+  contactPhone?: string;
   guestPhone?: string;
   courtId: number;
   courtName: string;
@@ -133,6 +134,10 @@ export type CalendarSlot = {
   endTime: string;
   status: 'DISPONIBLE' | 'PENDIENTE' | 'RESERVADO' | 'MANTENIMIENTO' | 'NO_DISPONIBLE';
   reservationId?: number;
+  reservationName?: string;
+  reservationPhone?: string;
+  reservationStartTime?: string;
+  reservationEndTime?: string;
 };
 export type PaymentConfig = {
   ownerName: string;
