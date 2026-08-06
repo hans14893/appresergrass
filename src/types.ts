@@ -127,6 +127,18 @@ export type Reservation = {
   notes?: string;
 };
 
+export type ReservationAudit = {
+  id: number;
+  action: string;
+  changedBy: string;
+  previousReservationStatus?: Reservation['status'];
+  newReservationStatus?: Reservation['status'];
+  previousPaymentStatus?: Reservation['paymentStatus'];
+  newPaymentStatus?: Reservation['paymentStatus'];
+  reason?: string;
+  changedAt: string;
+};
+
 export type CalendarSlot = {
   courtId: number;
   courtName: string;

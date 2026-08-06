@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, ClientDashboard, Court, CourtStats, OperationsDashboard, OperationsReservation, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, ClientDashboard, Court, CourtStats, OperationsDashboard, OperationsReservation, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationAudit, ReservationQuote, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -1264,6 +1264,9 @@ function ReservationsScreen({
   const [dateIndex, setDateIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [paymentReservation, setPaymentReservation] = useState<Reservation | null>(null);
+  const [historyReservation, setHistoryReservation] = useState<Reservation | null>(null);
+  const [history, setHistory] = useState<ReservationAudit[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
   const loadManagedReservations = async () => {
     const court = courts[courtIndex];
@@ -1299,18 +1302,56 @@ function ReservationsScreen({
     }
   };
 
-  const updateStatus = (reservationId: number, status: string) => runAction(() =>
-    api<Reservation>(`/reservations/${reservationId}/status?status=${status}`, { method: 'PATCH' })
+  const askConfirmation = (title: string, message: string, confirmText: string, action: () => void, destructive = false) => {
+    Alert.alert(title, message, [
+      { text: 'Volver', style: 'cancel' },
+      { text: confirmText, style: destructive ? 'destructive' : 'default', onPress: action }
+    ]);
+  };
+  const confirmPayment = (reservation: Reservation) => askConfirmation(
+    'Confirmar pago',
+    `¿Confirmar el pago de S/ ${formatMoney(reservation.totalAmount)} de ${reservation.clientName}?`,
+    'Confirmar pago',
+    () => runAction(() => api<Reservation>(`/reservations/${reservation.id}/payment/confirm?method=Yape`, { method: 'PATCH' }))
   );
-  const confirmPayment = (reservationId: number) => runAction(() =>
-    api<Reservation>(`/reservations/${reservationId}/payment/confirm?method=Yape`, { method: 'PATCH' })
+  const markLocalPayment = (reservation: Reservation) => askConfirmation(
+    'Pago en el local',
+    `¿Marcar la reserva de ${reservation.clientName} como pago en el local?`,
+    'Marcar pago local',
+    () => runAction(() => api<Reservation>(`/reservations/${reservation.id}/payment/local`, { method: 'PATCH' }))
   );
-  const markLocalPayment = (reservationId: number) => runAction(() =>
-    api<Reservation>(`/reservations/${reservationId}/payment/local`, { method: 'PATCH' })
+  const rejectPayment = (reservation: Reservation) => askConfirmation(
+    'Rechazar pago',
+    `¿Rechazar el pago de ${reservation.clientName}? La reserva volverá a estado pendiente.`,
+    'Rechazar',
+    () => runAction(() => api<Reservation>(`/reservations/${reservation.id}/payment/reject?reason=${encodeURIComponent('Pago rechazado por administracion')}`, { method: 'PATCH' })),
+    true
   );
-  const rejectPayment = (reservationId: number) => runAction(() =>
-    api<Reservation>(`/reservations/${reservationId}/payment/reject?reason=${encodeURIComponent('Pago rechazado por administracion')}`, { method: 'PATCH' })
+  const cancelReservation = (reservation: Reservation) => askConfirmation(
+    'Cancelar reserva',
+    `¿Cancelar la reserva de ${reservation.clientName} en ${reservation.courtName}, de ${to12Hour(reservation.startTime)} a ${to12Hour(reservation.endTime)}?`,
+    'Cancelar reserva',
+    () => runAction(() => api<Reservation>(`/reservations/${reservation.id}/status?status=CANCELADA&reason=${encodeURIComponent('Cancelada por el personal')}`, { method: 'PATCH' })),
+    true
   );
+  const restoreReservation = (reservation: Reservation) => askConfirmation(
+    'Restaurar reserva',
+    'Se comprobará que el horario continúe libre antes de restaurarlo.',
+    'Restaurar',
+    () => runAction(() => api<Reservation>(`/reservations/${reservation.id}/restore?reason=${encodeURIComponent('Restaurada por cancelacion accidental')}`, { method: 'PATCH' }))
+  );
+  const openHistory = async (reservation: Reservation) => {
+    setHistoryReservation(reservation);
+    setLoadingHistory(true);
+    try {
+      setHistory(await api<ReservationAudit[]>(`/reservations/${reservation.id}/history`));
+    } catch (requestError) {
+      setHistory([]);
+      Alert.alert('Historial', requestError instanceof Error ? requestError.message : 'No se pudo cargar el historial.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
 
   return (
     <View style={styles.pageFixed}>
@@ -1374,10 +1415,22 @@ function ReservationsScreen({
                 )}
               {canManage && item.status !== 'CANCELADA' && (
                 <View style={styles.adminActions}>
-                  <Pressable onPress={() => confirmPayment(item.id)}><Text style={styles.greenLink}>Confirmar pago</Text></Pressable>
-                  <Pressable onPress={() => markLocalPayment(item.id)}><Text style={styles.greenLink}>Pago local</Text></Pressable>
-                  <Pressable onPress={() => rejectPayment(item.id)}><Text style={styles.danger}>Rechazar</Text></Pressable>
-                  <Pressable onPress={() => updateStatus(item.id, 'CANCELADA')}><Text style={styles.danger}>Cancelar</Text></Pressable>
+                  <Pressable onPress={() => confirmPayment(item)}><Text style={styles.greenLink}>Confirmar pago</Text></Pressable>
+                  <Pressable onPress={() => markLocalPayment(item)}><Text style={styles.greenLink}>Pago local</Text></Pressable>
+                  <Pressable onPress={() => rejectPayment(item)}><Text style={styles.danger}>Rechazar</Text></Pressable>
+                  <Pressable onPress={() => cancelReservation(item)}><Text style={styles.danger}>Cancelar</Text></Pressable>
+                  <Pressable onPress={() => openHistory(item)}><Text style={styles.infoLink}>Historial</Text></Pressable>
+                </View>
+              )}
+              {canManage && item.status === 'CANCELADA' && (
+                <View style={styles.cancelledReservationActions}>
+                  <Pressable style={styles.restoreReservationButton} onPress={() => restoreReservation(item)}>
+                    <Ionicons name="refresh-circle-outline" size={20} color="#ffffff" />
+                    <Text style={styles.quickActionText}>Restaurar reserva</Text>
+                  </Pressable>
+                  <Pressable style={styles.historyButton} onPress={() => openHistory(item)}>
+                    <Ionicons name="time-outline" size={19} color="#ffffff" />
+                  </Pressable>
                 </View>
               )}
             </View>
@@ -1385,7 +1438,53 @@ function ReservationsScreen({
         />
       )}
       <PaymentDetailsModal reservation={paymentReservation} onClose={() => setPaymentReservation(null)} />
+      <ReservationHistoryModal reservation={historyReservation} items={history} loading={loadingHistory} onClose={() => setHistoryReservation(null)} />
     </View>
+  );
+}
+
+function ReservationHistoryModal({
+  reservation, items, loading, onClose
+}: {
+  reservation: Reservation | null;
+  items: ReservationAudit[];
+  loading: boolean;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={Boolean(reservation)} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.historyModal}>
+          <View style={styles.paymentModalHeader}>
+            <View>
+              <Text style={styles.saveConfirmationEyebrow}>BITACORA DE CAMBIOS</Text>
+              <Text style={styles.saveConfirmationTitle}>Reserva R{String(reservation?.id ?? 0).padStart(6, '0')}</Text>
+            </View>
+            <Pressable style={styles.modalCloseButton} onPress={onClose}><Ionicons name="close" size={24} color="#ffffff" /></Pressable>
+          </View>
+          {loading ? <ActivityIndicator color="#58c83c" style={{ marginVertical: 30 }} /> : (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {items.length === 0 ? <EmptyCard text="Esta reserva aún no tiene cambios registrados." /> : items.map((item) => (
+                <View key={item.id} style={styles.historyEntry}>
+                  <View style={styles.historyDot} />
+                  <View style={styles.historyEntryBody}>
+                    <Text style={styles.historyAction}>{item.action.replaceAll('_', ' ')}</Text>
+                    <Text style={styles.historyActor}>{item.changedBy} · {new Date(item.changedAt).toLocaleString('es-PE')}</Text>
+                    {(item.previousReservationStatus || item.newReservationStatus) && (
+                      <Text style={styles.historyChange}>Reserva: {item.previousReservationStatus ?? '-'} → {item.newReservationStatus ?? '-'}</Text>
+                    )}
+                    {(item.previousPaymentStatus || item.newPaymentStatus) && (
+                      <Text style={styles.historyChange}>Pago: {item.previousPaymentStatus ?? '-'} → {item.newPaymentStatus ?? '-'}</Text>
+                    )}
+                    {!!item.reason && <Text style={styles.historyReason}>Motivo: {item.reason}</Text>}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -2893,6 +2992,18 @@ const styles = StyleSheet.create({
   summaryLabel: { color: '#aab3b9', flex: 1 },
   summaryValue: { color: '#ffffff', fontWeight: '900', flex: 1.2, textAlign: 'right' },
   reservationFullCard: { marginBottom: 12 },
+  restoreReservationButton: { minHeight: 44, borderBottomLeftRadius: 10, borderBottomRightRadius: 10, backgroundColor: '#2479a8', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: -4 },
+  cancelledReservationActions: { flexDirection: 'row', gap: 7, marginTop: -4 },
+  historyButton: { width: 48, minHeight: 44, borderRadius: 9, backgroundColor: '#34474c', alignItems: 'center', justifyContent: 'center' },
+  infoLink: { color: '#65aee0', fontWeight: '800' },
+  historyModal: { width: '92%', maxHeight: '82%', borderRadius: 18, backgroundColor: '#071214', borderWidth: 1, borderColor: '#20363a', padding: 18 },
+  historyEntry: { flexDirection: 'row', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#192d31' },
+  historyDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#58c83c', marginTop: 5, marginRight: 11 },
+  historyEntryBody: { flex: 1 },
+  historyAction: { color: '#ffffff', fontSize: 13, fontWeight: '900' },
+  historyActor: { color: '#819095', fontSize: 11, marginTop: 4 },
+  historyChange: { color: '#c7d0d2', fontSize: 12, marginTop: 5 },
+  historyReason: { color: '#e0aa4e', fontSize: 11, marginTop: 5 },
   clientPayButton: { minHeight: 44, borderBottomLeftRadius: 10, borderBottomRightRadius: 10, backgroundColor: '#36b833', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: -4 },
   paymentDetailsModal: { width: '92%', maxHeight: '90%', borderRadius: 18, backgroundColor: '#071214', borderWidth: 1, borderColor: '#20363a', padding: 18 },
   paymentModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
