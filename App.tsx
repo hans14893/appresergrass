@@ -890,7 +890,6 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
           <View style={styles.durationRow}>
             {durationOptions.map((hours) => {
               const enabled = canSelectDuration(hours);
-              const optionPrice = priceForDuration(hours);
               return (
                 <Pressable
                   key={hours}
@@ -900,9 +899,6 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
                 >
                   <Text style={[styles.durationOptionText, durationHours === hours && styles.activeText]}>
                     {hours} {hours === 1 ? 'hora' : 'horas'}
-                  </Text>
-                  <Text style={[styles.durationPriceText, durationHours === hours && styles.activeText]}>
-                    {optionPrice === null ? 'Calculando...' : `S/ ${formatMoney(optionPrice)}`}
                   </Text>
                 </Pressable>
               );
@@ -2499,11 +2495,10 @@ const styles = StyleSheet.create({
   slotActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   slotText: { color: '#ffffff', fontWeight: '900', textAlign: 'center', fontSize: 12 },
   durationRow: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  durationOption: { width: '30.5%', minHeight: 62, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  durationOption: { width: '30.5%', minHeight: 52, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
   durationOptionActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   durationOptionDisabled: { opacity: 0.35 },
   durationOptionText: { color: '#ffffff', fontWeight: '800' },
-  durationPriceText: { color: '#72d45b', fontSize: 12, fontWeight: '800', marginTop: 4 },
   priceBreakdownCard: { marginHorizontal: 20, marginBottom: 18, padding: 15, borderRadius: 12, backgroundColor: '#0a1719', borderWidth: 1, borderColor: '#203437' },
   priceBreakdownTitle: { color: '#ffffff', fontSize: 15, fontWeight: '900', marginBottom: 10 },
   priceBreakdownRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 5 },
