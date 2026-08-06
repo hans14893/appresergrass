@@ -1263,6 +1263,7 @@ function ReservationsScreen({
   const [courtIndex, setCourtIndex] = useState(0);
   const [dateIndex, setDateIndex] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [paymentReservation, setPaymentReservation] = useState<Reservation | null>(null);
 
   const loadManagedReservations = async () => {
     const court = courts[courtIndex];
@@ -1362,6 +1363,15 @@ function ReservationsScreen({
           renderItem={({ item }) => (
             <View style={styles.reservationFullCard}>
               <ReservationCard reservation={item} />
+              {!canManage
+                && item.status === 'PENDIENTE'
+                && (item.paymentStatus === 'PENDIENTE_PAGO' || item.paymentStatus === 'RECHAZADO')
+                && secondsUntil(item.paymentExpiresAt) > 0 && (
+                  <Pressable style={styles.clientPayButton} onPress={() => setPaymentReservation(item)}>
+                    <Ionicons name="qr-code-outline" size={19} color="#ffffff" />
+                    <Text style={styles.quickActionText}>Pagar ahora</Text>
+                  </Pressable>
+                )}
               {canManage && item.status !== 'CANCELADA' && (
                 <View style={styles.adminActions}>
                   <Pressable onPress={() => confirmPayment(item.id)}><Text style={styles.greenLink}>Confirmar pago</Text></Pressable>
@@ -1374,9 +1384,85 @@ function ReservationsScreen({
           )}
         />
       )}
+      <PaymentDetailsModal reservation={paymentReservation} onClose={() => setPaymentReservation(null)} />
     </View>
   );
 }
+
+function PaymentDetailsModal({ reservation, onClose }: { reservation: Reservation | null; onClose: () => void }) {
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+  const [remaining, setRemaining] = useState(0);
+
+  useEffect(() => {
+    if (!reservation) return;
+    setRemaining(secondsUntil(reservation.paymentExpiresAt));
+    api<PaymentConfig>('/payment-config').then(setConfig).catch(() => setConfig(null));
+  }, [reservation?.id]);
+
+  useEffect(() => {
+    if (!reservation) return;
+    const timer = setInterval(() => setRemaining(secondsUntil(reservation.paymentExpiresAt)), 1000);
+    return () => clearInterval(timer);
+  }, [reservation?.id, reservation?.paymentExpiresAt]);
+
+  const sendProof = () => {
+    if (!reservation || !config) return;
+    const phone = normalizeWhatsappPhone(config.whatsappPhoneNumber);
+    const message = [
+      'Hola.',
+      '',
+      'Adjunto el comprobante de pago de mi reserva.',
+      `Reserva N: R${String(reservation.id).padStart(6, '0')}`,
+      `Nombre: ${reservation.clientName}`,
+      `Cancha: ${reservation.courtName}`,
+      `Fecha: ${reservation.reservationDate}`,
+      `Hora: ${to12Hour(reservation.startTime)} - ${to12Hour(reservation.endTime)}`,
+      `Monto: S/ ${formatMoney(reservation.totalAmount)}`
+    ].join('\n');
+    Linking.openURL(`https://wa.me/${phone}?text=${encodeURIComponent(message)}`);
+  };
+
+  return (
+    <Modal visible={Boolean(reservation)} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.paymentDetailsModal}>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <View style={styles.paymentModalHeader}>
+              <View>
+                <Text style={styles.saveConfirmationEyebrow}>PAGO DE RESERVA</Text>
+                <Text style={styles.saveConfirmationTitle}>Paga con Yape</Text>
+              </View>
+              <Pressable style={styles.modalCloseButton} onPress={onClose}><Ionicons name="close" size={24} color="#ffffff" /></Pressable>
+            </View>
+            <Text style={styles.centerCopy}>Escanea el QR o utiliza el número Yape. Después envía tu comprobante por WhatsApp.</Text>
+            <View style={styles.countdownCard}>
+              <Text style={styles.fieldLabel}>Tiempo restante</Text>
+              <Text style={styles.countdownText}>{formatCountdown(remaining)}</Text>
+            </View>
+            {config ? (
+              <View style={styles.paymentBox}>
+                <Image source={{ uri: resolveApiUrl(config.yapeQrUrl) }} style={[styles.qrImage, styles.paymentModalQr]} />
+                <SummaryRow label="Número Yape" value={config.yapePhoneNumber} />
+                <SummaryRow label="Titular" value={config.ownerName} />
+              </View>
+            ) : <ActivityIndicator color="#58c83c" style={{ marginVertical: 24 }} />}
+            {reservation && (
+              <View style={styles.summaryCard}>
+                <SummaryRow label="Cancha" value={reservation.courtName} />
+                <SummaryRow label="Fecha" value={reservation.reservationDate} />
+                <SummaryRow label="Horario" value={`${to12Hour(reservation.startTime)} - ${to12Hour(reservation.endTime)}`} />
+                <SummaryRow label="Monto" value={`S/ ${formatMoney(reservation.totalAmount)}`} />
+              </View>
+            )}
+            <Button title="Enviar comprobante por WhatsApp" onPress={sendProof} disabled={!config || remaining <= 0} />
+            {remaining <= 0 && <Text style={styles.dangerCenter}>El tiempo para pagar esta reserva terminó.</Text>}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function AdminCourtsScreen({ courts, refresh }: { courts: Court[]; refresh: () => void }) {
   const [adminCourts, setAdminCourts] = useState<Court[]>(courts);
   const [selected, setSelected] = useState<Court | null>(null);
@@ -2807,6 +2893,12 @@ const styles = StyleSheet.create({
   summaryLabel: { color: '#aab3b9', flex: 1 },
   summaryValue: { color: '#ffffff', fontWeight: '900', flex: 1.2, textAlign: 'right' },
   reservationFullCard: { marginBottom: 12 },
+  clientPayButton: { minHeight: 44, borderBottomLeftRadius: 10, borderBottomRightRadius: 10, backgroundColor: '#36b833', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: -4 },
+  paymentDetailsModal: { width: '92%', maxHeight: '90%', borderRadius: 18, backgroundColor: '#071214', borderWidth: 1, borderColor: '#20363a', padding: 18 },
+  paymentModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
+  modalCloseButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#132428', alignItems: 'center', justifyContent: 'center' },
+  paymentModalQr: { alignSelf: 'center', width: 210, height: 210, marginBottom: 14 },
+  dangerCenter: { color: '#ee6a61', textAlign: 'center', marginTop: 11, fontWeight: '800' },
   adminActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 18, paddingRight: 8 },
   danger: { color: '#ff625c', fontWeight: '900' },
   adminCard: { borderWidth: 1, borderColor: '#1d363b', backgroundColor: '#081719', borderRadius: 8, padding: 14, marginTop: 12, gap: 10 },
