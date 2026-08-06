@@ -138,6 +138,7 @@ export type CalendarSlot = {
   reservationPhone?: string;
   reservationStartTime?: string;
   reservationEndTime?: string;
+  price?: number;
 };
 
 export type ReservationQuoteItem = {

@@ -877,7 +877,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
                     ? canUseGuest && slot.reservationName
                       ? `Reservado\n${slot.reservationName}`
                       : 'Reservado'
-                    : to12Hour(slot.startTime)}
+                    : `${to12Hour(slot.startTime)}\nS/ ${formatMoney(slot.price ?? court.hourlyPrice)}`}
                 </Text>
               </Pressable>
             );
@@ -887,7 +887,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
       {!!time && (
         <>
           <Text style={styles.sectionTitle}>¿Cuántas horas deseas?</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.durationRow}>
+          <View style={styles.durationRow}>
             {durationOptions.map((hours) => {
               const enabled = canSelectDuration(hours);
               const optionPrice = priceForDuration(hours);
@@ -907,7 +907,7 @@ function CourtDetailScreen({ court, session, onBack, onReserved }: { court: Cour
                 </Pressable>
               );
             })}
-          </ScrollView>
+          </View>
           <Text style={styles.selectionSummary}>
             Reserva: {to12Hour(time)} - {to12Hour(slots[selectedSlotIndex + durationHours - 1]?.endTime ?? time)}
           </Text>
@@ -2492,14 +2492,14 @@ const styles = StyleSheet.create({
   dateMonth: { color: '#c2cbd1', fontSize: 13, fontWeight: '800' },
   activeText: { color: '#ffffff' },
   timeGrid: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  slot: { width: '30.5%', minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: '#1a3035', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  slot: { width: '30.5%', minHeight: 58, borderRadius: 8, borderWidth: 1, borderColor: '#1a3035', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
   slotDisabled: { opacity: 0.45, backgroundColor: '#182124' },
   slotTextDisabled: { color: '#7f898f' },
   slotReserved: { minHeight: 64, backgroundColor: '#6f1717', borderColor: '#ff5148' },
   slotActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   slotText: { color: '#ffffff', fontWeight: '900', textAlign: 'center', fontSize: 12 },
-  durationRow: { paddingHorizontal: 20, flexDirection: 'row', gap: 10 },
-  durationOption: { width: 125, minHeight: 62, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
+  durationRow: { paddingHorizontal: 20, flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  durationOption: { width: '30.5%', minHeight: 62, borderRadius: 9, borderWidth: 1, borderColor: '#264047', backgroundColor: '#081719', alignItems: 'center', justifyContent: 'center' },
   durationOptionActive: { backgroundColor: '#36b833', borderColor: '#36b833' },
   durationOptionDisabled: { opacity: 0.35 },
   durationOptionText: { color: '#ffffff', fontWeight: '800' },
