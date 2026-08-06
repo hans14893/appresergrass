@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, OperationsDashboard, OperationsReservation, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, ClientDashboard, Court, CourtStats, OperationsDashboard, OperationsReservation, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, ReservationQuote, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -586,7 +586,7 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
     <View style={styles.appShell}>
       {tab === 'home' && (canManage
         ? <ManagedDashboard session={session} courts={courts} openCourt={openCourt} openReservations={() => setTab('reservations')} openCourts={() => setTab('courts')} />
-        : <Dashboard session={session} courts={courts} reservations={reservations} openCourt={openCourt} />)}
+        : <Dashboard session={session} courts={courts} openCourt={openCourt} openReservations={() => setTab('reservations')} openCourts={() => setTab('courts')} />)}
       {tab === 'reservations' && <ReservationsScreen reservations={reservations} courts={courts} canManage={canManage} refreshParent={loadReservations} />}
       {tab === 'courts' && <CourtsScreen courts={courts} openCourt={openCourt} />}
       {tab === 'admin' && <AdminCourtsScreen courts={courts} refresh={loadCourts} />}
@@ -596,39 +596,93 @@ function HomeScreen({ session, onLogout }: { session: AuthResponse; onLogout: ()
   );
 }
 
-function Dashboard({ session, courts, reservations, openCourt }: { session: AuthResponse; courts: Court[]; reservations: Reservation[]; openCourt: (court: Court) => void }) {
-  const upcoming = reservations.slice(0, 2);
+function Dashboard({
+  session, courts, openCourt, openReservations, openCourts
+}: {
+  session: AuthResponse; courts: Court[]; openCourt: (court: Court) => void;
+  openReservations: () => void; openCourts: () => void;
+}) {
+  const [dashboard, setDashboard] = useState<ClientDashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
+  const loadDashboard = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      setDashboard(await api<ClientDashboard>('/dashboard/client'));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'No se pudo cargar el inicio.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadDashboard(); }, []);
+
+  if (loading && !dashboard) {
+    return <View style={styles.managedLoading}><ActivityIndicator color="#58c83c" size="large" /><Text style={styles.bodyCopy}>Buscando horarios disponibles...</Text></View>;
+  }
+  if (!dashboard) {
+    return <View style={styles.managedLoading}><Ionicons name="cloud-offline-outline" size={46} color="#e46b62" /><Text style={styles.managedError}>{error}</Text><Pressable style={styles.primaryAction} onPress={loadDashboard}><Text style={styles.activeText}>Reintentar</Text></Pressable></View>;
+  }
+
+  const nextReservation = dashboard.nextReservation;
   return (
-    <ScrollView contentContainerStyle={styles.page}>
-      <View style={styles.topBar}>
-        <Ionicons name="menu" size={28} color="#ffffff" />
-        <Text style={styles.location}>Huancayo, Perú</Text>
-        <Ionicons name="notifications-outline" size={24} color="#ffffff" />
+    <ScrollView contentContainerStyle={styles.clientHomePage}>
+      <View style={styles.clientHomeHeader}>
+        <View>
+          <Text style={styles.clientWelcome}>Hola, {firstName(session.fullName)}</Text>
+          <View style={styles.clientLocationRow}><Ionicons name="football-outline" size={15} color="#58c83c" /><Text style={styles.clientLocation}>Reserva tu cancha</Text></View>
+        </View>
+        <Pressable style={styles.refreshButton} onPress={loadDashboard} disabled={loading}><Ionicons name="refresh" size={22} color="#ffffff" /></Pressable>
       </View>
-      <Text style={styles.hello}>¡Hola, {firstName(session.fullName)}!</Text>
-      <Text style={styles.bodyCopy}>¿Listo para reservar tu cancha?</Text>
+
+      <View style={styles.clientHeroCard}>
+        <View style={styles.clientHeroCopy}>
+          <Text style={styles.clientHeroTitle}>Tu próximo partido empieza aquí</Text>
+          <Text style={styles.clientHeroText}>Elige una cancha y reserva un horario disponible en pocos pasos.</Text>
+          <Pressable style={styles.clientReserveButton} onPress={openCourts}><Ionicons name="football" size={20} color="#ffffff" /><Text style={styles.quickActionText}>Reservar cancha</Text></Pressable>
+        </View>
+        <Ionicons name="football-outline" size={74} color="#58c83c" />
+      </View>
 
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Próximos horarios disponibles</Text>
-        <Text style={styles.greenLink}>Ver todos</Text>
+        <Text style={styles.sectionTitle}>Tu próxima reserva</Text>
+        <Pressable onPress={openReservations}><Text style={styles.greenLink}>Ver todas</Text></Pressable>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        {courts.slice(0, 4).map((court, index) => (
-          <Pressable key={court.id} style={styles.timeCard} onPress={() => openCourt(court)}>
-            <Text style={styles.cardTitle}>{court.name}</Text>
-            <Text style={styles.timeText}>{7 + index}:00 <Text style={styles.greenText}>PM</Text></Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+      {nextReservation ? (
+        <Pressable style={styles.clientReservationCard} onPress={openReservations}>
+          <View style={styles.clientReservationDate}><Ionicons name="calendar" size={23} color="#58c83c" /><Text style={styles.clientReservationDay}>{nextReservation.date}</Text></View>
+          <View style={styles.clientReservationInfo}>
+            <Text style={styles.clientReservationCourt}>{nextReservation.courtName}</Text>
+            <Text style={styles.clientReservationTime}>{to12Hour(nextReservation.startTime)} - {to12Hour(nextReservation.endTime)}</Text>
+            <Text style={[styles.clientPaymentStatus, nextReservation.paymentStatus === 'PAGADO' && styles.greenText]}>{labelPaymentStatus(nextReservation.paymentStatus)} - S/ {formatMoney(nextReservation.totalAmount)}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={23} color="#7f8d92" />
+        </Pressable>
+      ) : <EmptyCard text="No tienes reservas próximas." />}
 
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Mis próximas reservas</Text>
-        <Text style={styles.greenLink}>Ver todas</Text>
+        <Text style={styles.sectionTitle}>Disponibles hoy</Text>
+        <Pressable onPress={openCourts}><Text style={styles.greenLink}>Ver canchas</Text></Pressable>
       </View>
-      {upcoming.length === 0 ? (
-        <EmptyCard text="Aún no tienes reservas para hoy." />
-      ) : upcoming.map((item) => <ReservationCard key={item.id} reservation={item} />)}
+      {dashboard.nextAvailableSlots.length === 0 ? <EmptyCard text="No quedan horarios disponibles para hoy. Revisa otra fecha." /> : (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.clientAvailabilityRow}>
+          {dashboard.nextAvailableSlots.map((slot, index) => {
+            const court = courts.find((item) => item.id === slot.courtId);
+            return (
+              <Pressable key={slot.courtId} style={styles.clientAvailabilityCard} onPress={() => court && openCourt(court)}>
+                <Image source={{ uri: slot.imageUrl ? resolveApiUrl(slot.imageUrl) : courtImages[index % courtImages.length] }} style={styles.clientAvailabilityImage} />
+                <Text style={styles.clientAvailabilityCourt}>{slot.courtName}</Text>
+                <View style={styles.clientAvailabilityTimeRow}><Ionicons name="time-outline" size={16} color="#58c83c" /><Text style={styles.clientAvailabilityTime}>{to12Hour(slot.startTime)}</Text></View>
+                <Text style={styles.clientAvailabilityPrice}>S/ {formatMoney(slot.price)} por hora</Text>
+                <Text style={styles.clientAvailabilityAction}>Reservar</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      )}
     </ScrollView>
   );
 }
@@ -2590,6 +2644,31 @@ const styles = StyleSheet.create({
   outlineText: { color: '#ffffff' },
   appShell: { flex: 1, backgroundColor: '#020b0d' },
   page: { flexGrow: 1, padding: 22, paddingBottom: 104, backgroundColor: '#020b0d' },
+  clientHomePage: { flexGrow: 1, padding: 20, paddingBottom: 112, backgroundColor: '#020b0d' },
+  clientHomeHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
+  clientWelcome: { color: '#ffffff', fontSize: 25, fontWeight: '900' },
+  clientLocationRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 5 },
+  clientLocation: { color: '#879499', fontSize: 12 },
+  clientHeroCard: { minHeight: 174, borderRadius: 18, backgroundColor: '#0d2718', borderWidth: 1, borderColor: '#20552b', padding: 19, flexDirection: 'row', alignItems: 'center', overflow: 'hidden', marginBottom: 8 },
+  clientHeroCopy: { flex: 1, paddingRight: 8 },
+  clientHeroTitle: { color: '#ffffff', fontSize: 22, lineHeight: 27, fontWeight: '900' },
+  clientHeroText: { color: '#a9b8b0', fontSize: 12, lineHeight: 18, marginTop: 7, marginBottom: 14 },
+  clientReserveButton: { alignSelf: 'flex-start', minHeight: 43, borderRadius: 10, paddingHorizontal: 14, backgroundColor: '#36b833', flexDirection: 'row', gap: 7, alignItems: 'center', justifyContent: 'center' },
+  clientReservationCard: { minHeight: 104, borderRadius: 13, backgroundColor: '#081719', borderWidth: 1, borderColor: '#1a3035', padding: 13, flexDirection: 'row', alignItems: 'center' },
+  clientReservationDate: { width: 82, alignItems: 'center', justifyContent: 'center', borderRightWidth: 1, borderRightColor: '#203439', paddingRight: 10 },
+  clientReservationDay: { color: '#d8e0e2', fontSize: 11, marginTop: 6, textAlign: 'center' },
+  clientReservationInfo: { flex: 1, paddingHorizontal: 13 },
+  clientReservationCourt: { color: '#ffffff', fontSize: 16, fontWeight: '900' },
+  clientReservationTime: { color: '#c3cdcf', fontSize: 13, marginTop: 5 },
+  clientPaymentStatus: { color: '#e3a63b', fontSize: 11, fontWeight: '800', marginTop: 5 },
+  clientAvailabilityRow: { gap: 11, paddingRight: 20 },
+  clientAvailabilityCard: { width: 188, borderRadius: 13, backgroundColor: '#081719', borderWidth: 1, borderColor: '#1a3035', padding: 11 },
+  clientAvailabilityImage: { width: '100%', height: 82, borderRadius: 9, marginBottom: 10, backgroundColor: '#132529' },
+  clientAvailabilityCourt: { color: '#ffffff', fontSize: 15, fontWeight: '900' },
+  clientAvailabilityTimeRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 7 },
+  clientAvailabilityTime: { color: '#dbe3e4', fontSize: 13, fontWeight: '800' },
+  clientAvailabilityPrice: { color: '#89979b', fontSize: 11, marginTop: 5 },
+  clientAvailabilityAction: { color: '#58c83c', fontWeight: '900', marginTop: 10 },
   managedPage: { flexGrow: 1, padding: 20, paddingBottom: 112, backgroundColor: '#020b0d' },
   managedLoading: { flex: 1, backgroundColor: '#020b0d', alignItems: 'center', justifyContent: 'center', gap: 14, padding: 30 },
   managedError: { color: '#dce3e5', textAlign: 'center', lineHeight: 21 },

@@ -188,6 +188,35 @@ export type OperationsDashboard = {
   courts: CourtOperation[];
   upcomingReservations: OperationsReservation[];
 };
+
+export type ClientCourtAvailability = {
+  courtId: number;
+  courtName: string;
+  description?: string;
+  imageUrl?: string;
+  startTime: string;
+  endTime: string;
+  price: number;
+};
+
+export type ClientReservationSummary = {
+  id: number;
+  courtId: number;
+  courtName: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  status: Reservation['status'];
+  paymentStatus: Reservation['paymentStatus'];
+  totalAmount: number;
+  paymentExpiresAt?: string;
+};
+
+export type ClientDashboard = {
+  date: string;
+  nextAvailableSlots: ClientCourtAvailability[];
+  nextReservation?: ClientReservationSummary;
+};
 export type PaymentConfig = {
   ownerName: string;
   yapePhoneNumber: string;
