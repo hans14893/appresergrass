@@ -27,6 +27,12 @@ export type RegistrationResponse = {
   resendAfterSeconds: number;
 };
 
+export type PasswordResetResponse = {
+  message: string;
+  expiresInSeconds: number;
+  resendAfterSeconds: number;
+};
+
 export type Court = {
   id: number;
   name: string;

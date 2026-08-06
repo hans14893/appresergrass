@@ -20,7 +20,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { api, resolveApiUrl, setAuthToken, setUnauthorizedHandler, uploadFile } from './src/api/client';
 import { subscribeAvailability } from './src/api/realtime';
-import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PaymentConfig, RegistrationResponse, Reservation, Role } from './src/types';
+import { AdminUser, AuthResponse, CalendarSlot, Court, CourtStats, PasswordResetResponse, PaymentConfig, RegistrationResponse, Reservation, Role } from './src/types';
 import { clearSession, getSession, getTokenExpirationMs, saveSession } from './src/storage/session';
 
 const APP_TIME_ZONE = 'America/Lima';
@@ -48,7 +48,7 @@ const courtImages = [
   'https://images.unsplash.com/photo-1522778119026-d647f0596c20?auto=format&fit=crop&w=900&q=80'
 ];
 
-type AuthMode = 'welcome' | 'login' | 'register' | 'verify' | 'forgot';
+type AuthMode = 'welcome' | 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 type AuthField = 'names' | 'lastNames' | 'email' | 'phone' | 'password' | 'confirmPassword';
 type AuthFieldErrors = Partial<Record<AuthField, string>>;
 type HomeTab = 'home' | 'reservations' | 'courts' | 'admin' | 'profile';
@@ -152,6 +152,11 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
   const [verificationError, setVerificationError] = useState<string>();
   const [resendRemaining, setResendRemaining] = useState(0);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
+  const [resetCode, setResetCode] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
+  const [resetError, setResetError] = useState<string>();
+  const [resetResendRemaining, setResetResendRemaining] = useState(0);
 
   const updateAuthField = (field: AuthField, setter: (value: string) => void, value: string) => {
     setter(value);
@@ -194,6 +199,12 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
     const timer = setInterval(() => setResendRemaining((current) => Math.max(0, current - 1)), 1000);
     return () => clearInterval(timer);
   }, [mode, resendRemaining > 0]);
+
+  useEffect(() => {
+    if (mode !== 'reset' || resetResendRemaining <= 0) return;
+    const timer = setInterval(() => setResetResendRemaining((current) => Math.max(0, current - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [mode, resetResendRemaining > 0]);
 
   const submit = async () => {
     const normalizedEmail = email.trim().toLowerCase();
@@ -296,6 +307,66 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
     }
   };
 
+  const requestPasswordReset = async (isResend = false) => {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setFieldErrors((current) => ({ ...current, email: 'Ingresa un correo válido.' }));
+      return;
+    }
+    try {
+      setBusy(true);
+      const payload = await api<PasswordResetResponse>('/auth/forgot-password', {
+        method: 'POST',
+        body: { email: normalizedEmail }
+      });
+      setResetResendRemaining(payload.resendAfterSeconds);
+      setResetError(undefined);
+      if (!isResend) {
+        setResetCode('');
+        setResetPassword('');
+        setResetPasswordConfirm('');
+        setMode('reset');
+      } else {
+        Alert.alert('Solicitud enviada', payload.message);
+      }
+    } catch (error) {
+      Alert.alert('No se pudo enviar', error instanceof Error ? error.message : 'Error desconocido');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetForgottenPassword = async () => {
+    if (resetCode.length !== 6) {
+      setResetError('Ingresa el código de 6 dígitos.');
+      return;
+    }
+    if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,80}$/.test(resetPassword)) {
+      setResetError('La nueva contraseña necesita 8 caracteres, mayúscula, minúscula y número.');
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setResetError('Las contraseñas no coinciden.');
+      return;
+    }
+    try {
+      setBusy(true);
+      const payload = await api<PasswordResetResponse>('/auth/reset-password', {
+        method: 'POST',
+        body: { email: email.trim().toLowerCase(), code: resetCode, newPassword: resetPassword }
+      });
+      Alert.alert('Contraseña actualizada', payload.message);
+      setResetCode('');
+      setResetPassword('');
+      setResetPasswordConfirm('');
+      navigateAuth('login');
+    } catch (error) {
+      setResetError(error instanceof Error ? error.message : 'No se pudo cambiar la contraseña.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (mode === 'verify') {
     return (
       <AuthShell onBack={() => navigateAuth('register')}>
@@ -353,6 +424,29 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
     );
   }
 
+  if (mode === 'reset') {
+    return (
+      <AuthShell onBack={() => navigateAuth('forgot')}>
+        <View style={styles.forgotIcon}>
+          <Ionicons name="key" size={44} color="#ffffff" />
+        </View>
+        <Text style={styles.authTitle}>Crea una <Text style={styles.greenText}>nueva contraseña</Text></Text>
+        <Text style={styles.centerCopy}>Ingresa el código enviado a {email.trim().toLowerCase()} y tu nueva contraseña.</Text>
+        <Field icon="keypad-outline" label="Código de 6 dígitos" placeholder="000000" value={resetCode} onChangeText={(value) => { setResetCode(value.replace(/\D/g, '').slice(0, 6)); setResetError(undefined); }} keyboardType="number-pad" maxLength={6} />
+        <Field icon="lock-closed" label="Nueva contraseña" placeholder="••••••••" value={resetPassword} onChangeText={(value) => { setResetPassword(value); setResetError(undefined); }} secureTextEntry />
+        <Text style={styles.authFieldHint}>Mínimo 8 caracteres, con mayúscula, minúscula y número.</Text>
+        <Field icon="lock-closed-outline" label="Confirmar nueva contraseña" placeholder="••••••••" value={resetPasswordConfirm} onChangeText={(value) => { setResetPasswordConfirm(value); setResetError(undefined); }} secureTextEntry />
+        {resetError && <Text style={styles.fieldErrorText}>{resetError}</Text>}
+        <Button title={busy ? 'Actualizando...' : 'Cambiar contraseña'} onPress={resetForgottenPassword} disabled={busy} />
+        <Pressable onPress={() => requestPasswordReset(true)} disabled={busy || resetResendRemaining > 0}>
+          <Text style={[styles.mutedCenter, resetResendRemaining === 0 && styles.greenLink]}>
+            {resetResendRemaining > 0 ? `Reenviar código en ${resetResendRemaining}s` : 'Reenviar código'}
+          </Text>
+        </Pressable>
+      </AuthShell>
+    );
+  }
+
   if (mode === 'forgot') {
     return (
       <AuthShell onBack={() => navigateAuth('login')}>
@@ -360,9 +454,9 @@ function AuthScreen({ onAuth }: { onAuth: (auth: AuthResponse, shouldRemember: b
           <Ionicons name="mail" size={44} color="#ffffff" />
         </View>
         <Text style={styles.authTitle}>Recuperar <Text style={styles.greenText}>contraseña</Text></Text>
-        <Text style={styles.centerCopy}>Ingresa tu correo electrónico y te enviaremos un enlace para restablecer tu contraseña.</Text>
-        <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
-        <Button title="Enviar enlace" onPress={() => Alert.alert('Recuperación', 'Función lista para conectar con el backend.')} />
+        <Text style={styles.centerCopy}>Ingresa tu correo electrónico y te enviaremos un código de 6 dígitos.</Text>
+        <Field icon="mail-outline" label="Correo electrónico" placeholder="ejemplo@correo.com" value={email} onChangeText={(value) => updateAuthField('email', setEmail, value)} onBlur={() => validateAuthField('email')} autoCapitalize="none" autoCorrect={false} keyboardType="email-address" error={fieldErrors.email} />
+        <Button title={busy ? 'Enviando...' : 'Enviar código'} onPress={() => requestPasswordReset()} disabled={busy} />
         <Pressable onPress={() => navigateAuth('login')}>
           <Text style={styles.mutedCenter}>Volver al inicio de sesión</Text>
         </Pressable>
